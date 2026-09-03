@@ -1,0 +1,49 @@
+{
+  "section_detect": {
+    "type": "section",
+    "name": "检测开关",
+    "collapsed": false,
+    "hint": "各骚扰信号独立开关",
+    "fields": {
+      "detect_poke": {"type": "switch", "name": "戳一戳检测", "default": true, "hint": "时间窗内被戳次数达阈值时通知 bot"},
+      "detect_at": {"type": "switch", "name": "连续 at 检测", "default": true, "hint": "时间窗内被 @ 次数达阈值时通知 bot"},
+      "detect_keyword": {"type": "switch", "name": "连续关键词检测", "default": false, "hint": "时间窗内命中唤醒词次数达阈值时通知 bot"},
+      "detect_bot_speech": {"type": "switch", "name": "bot 发言条数检测", "default": false, "hint": "时间窗内 bot 自己发言条数达阈值时通知（防自己刷屏）"},
+      "detect_user_msgs": {"type": "switch", "name": "单用户消息条数检测", "default": false, "hint": "时间窗内某用户消息条数达阈值时通知（防刷屏轰炸）"},
+      "detect_session_msgs": {"type": "switch", "name": "会话消息条数检测", "default": false, "hint": "时间窗内某会话消息条数达阈值时通知（防群刷屏）"}
+    }
+  },
+  "section_thresholds": {
+    "type": "section",
+    "name": "检测阈值",
+    "collapsed": true,
+    "hint": "各信号的窗口与阈值",
+    "fields": {
+      "poke_window_seconds": {"type": "float", "name": "戳一戳窗口（秒）", "default": 60},
+      "poke_threshold": {"type": "integer", "name": "戳一戳阈值", "default": 3},
+      "at_window_seconds": {"type": "float", "name": "at 窗口（秒）", "default": 60},
+      "at_threshold": {"type": "integer", "name": "at 阈值", "default": 3},
+      "keyword_window_seconds": {"type": "float", "name": "关键词窗口（秒）", "default": 60},
+      "keyword_threshold": {"type": "integer", "name": "关键词阈值", "default": 5},
+      "bot_speech_window_seconds": {"type": "float", "name": "bot 发言窗口（秒）", "default": 300},
+      "bot_speech_threshold": {"type": "integer", "name": "bot 发言阈值", "default": 10},
+      "user_msgs_window_seconds": {"type": "float", "name": "单用户消息窗口（秒）", "default": 60},
+      "user_msgs_threshold": {"type": "integer", "name": "单用户消息阈值", "default": 10},
+      "session_msgs_window_seconds": {"type": "float", "name": "会话消息窗口（秒）", "default": 60},
+      "session_msgs_threshold": {"type": "integer", "name": "会话消息阈值", "default": 20}
+    }
+  },
+  "section_ignore": {
+    "type": "section",
+    "name": "屏蔽参数",
+    "collapsed": true,
+    "hint": "屏蔽时长与持久化",
+    "fields": {
+      "default_ignore_duration": {"type": "integer", "name": "默认屏蔽时长（秒）", "default": 180, "hint": "bot 不指定时长时使用的屏蔽时长"},
+      "fixed_duration": {"type": "integer", "name": "固定屏蔽时长（秒）", "default": 0, "hint": ">0 时所有屏蔽都用该值，忽略 bot 传的时长；0=不启用"},
+      "max_duration": {"type": "integer", "name": "最大屏蔽时长（秒）", "default": 0, "hint": ">0 时 bot 传的时长超过则钳制；0=不限制"},
+      "notify_unblock": {"type": "switch", "name": "屏蔽到期通知", "default": true, "hint": "屏蔽到期自动解除时通知 bot"},
+      "persist": {"type": "switch", "name": "屏蔽名单持久化", "default": true, "hint": "屏蔽名单保存到 data 目录，重启不丢"}
+    }
+  }
+}
