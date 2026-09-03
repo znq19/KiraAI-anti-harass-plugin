@@ -58,6 +58,7 @@ class AntiHarassPlugin(BasePlugin):
         # 屏蔽名单持久化
         self._persist_path = None
         self._persist_task: Optional[asyncio.Task] = None
+        self._prune_task: Optional[asyncio.Task] = None
 
     def _load_config(self, cfg: dict) -> None:
         # schema 是 section 结构（section_detect/section_thresholds/section_ignore）
@@ -88,7 +89,7 @@ class AntiHarassPlugin(BasePlugin):
                 "default_duration": self.default_ignore_duration,
                 "allow_bot_duration": True,
                 "max_duration": self.max_duration,
-                "scope": "per_user",
+                "scope": th.get(f"{key}_scope", "per_user"),
             }
 
     async def initialize(self):
@@ -97,13 +98,37 @@ class AntiHarassPlugin(BasePlugin):
             self._persist_path = os.path.join(self.data_dir, "ignore_list.json")
             self._load_persist()
             self._persist_task = asyncio.create_task(self._persist_loop())
+        # 额外信号计数回收（7 天闲置清理）
+        self._prune_task = asyncio.create_task(self._prune_loop())
         logger.info("[AntiHarass] 防骚扰插件已加载")
 
     async def terminate(self):
         if self._persist_task and not self._persist_task.done():
             self._persist_task.cancel()
+        if self._prune_task and not self._prune_task.done():
+            self._prune_task.cancel()
         self._save_persist()
         logger.info("[AntiHarass] 防骚扰插件已终止")
+
+    async def _prune_loop(self):
+        """回收 7 天无活动的额外信号计数（防历史会话无限增长）。"""
+        while True:
+            try:
+                await asyncio.sleep(3600)
+                now = time.time()
+                for sid in list(self._extra_counts.keys()):
+                    counts = self._extra_counts[sid]
+                    # 所有 kind 的最近时间戳都超过 7 天 → 回收
+                    recent = any(
+                        any(ts >= now - 7 * 24 * 3600 for ts, _ in q)
+                        for q in counts.values()
+                    )
+                    if not recent:
+                        self._extra_counts.pop(sid, None)
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("[AntiHarass] prune loop error")
 
     # ---- 持久化 ----
 
@@ -259,17 +284,20 @@ class AntiHarassPlugin(BasePlugin):
         if self.max_duration > 0:
             duration = min(duration, self.max_duration)
         uid = "*" if target == "all" else (target[5:] if target.startswith("user:") else target)
-        if uid == "*":
-            self.harass.apply_ignore(sid, "*", kind, duration)
-        elif uid and uid != "user":
-            self.harass.apply_ignore(sid, uid, kind, duration)
-        else:
-            # user 无具体 ID：反查最近触发者
-            last_uid = self.harass._last_trigger_user(sid, kind)
-            if last_uid:
-                self.harass.apply_ignore(sid, last_uid, kind, duration)
+        # kind=all 时展开全部 7 类（4 核心 + 3 额外信号）
+        kinds = ("poke", "at", "keyword", "reply", "bot_speech", "user_msgs", "session_msgs") if kind == "all" else (kind,)
+        for k in kinds:
+            if uid == "*":
+                self.harass.apply_ignore(sid, "*", k, duration)
+            elif uid and uid != "user":
+                self.harass.apply_ignore(sid, uid, k, duration)
             else:
-                logger.warning(f"[AntiHarass] 无法确定目标用户，未屏蔽: {sid} {kind}")
+                # user 无具体 ID：反查最近触发者
+                last_uid = self.harass._last_trigger_user(sid, k)
+                if last_uid:
+                    self.harass.apply_ignore(sid, last_uid, k, duration)
+                else:
+                    logger.warning(f"[AntiHarass] 无法确定目标用户，未屏蔽: {sid} {k}")
         logger.info(f"[AntiHarass] 屏蔽: {uid} {kind} {duration}s")
         return []
 

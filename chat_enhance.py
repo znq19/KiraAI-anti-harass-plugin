@@ -290,8 +290,10 @@ class HarassDetector:
         now = time.time()
         rows = []
         for (s, uid, kind), until in self._ignored.items():
-            if s == sid and until > now:
-                rows.append(f"{uid} {kind} 剩余 {int(until - now)}s")
+            # 全局屏蔽（s="*"）对所有会话可见
+            if (s == sid or s == "*") and until > now:
+                scope = "全局" if s == "*" else (f"会话{s}" if uid == "*" else f"用户{uid}")
+                rows.append(f"{scope} {kind} 剩余 {int(until - now)}s")
         return "当前屏蔽: " + ("; ".join(rows) if rows else "无")
 
     def prune(self) -> None:
@@ -558,17 +560,20 @@ class ChatEnhanceEngine:
                 self.merger.queue(sid, notice)
 
         # 休眠判定：休眠期内被提及 → 起夜概率
+        _just_woken = False
         if self.dormant.in_dormant(self._now_hhmm()):
             mentioned = getattr(event.message, "is_mentioned", False) or event.is_mentioned
             if mentioned and not self.dormant.is_awake(sid, now):
                 if self.dormant.try_wake(sid, now):
                     self.merger.queue(sid, self.dormant.wake_notice(sid))
+                    _just_woken = True
                 else:
                     # 起夜未命中：休眠期内不触发（宿主据此决定是否抑制）
                     event._enhance_dormant_blocked = True
 
-        # 强制通路超额抑制：占比超标时被唤醒降级为评分门槛（分值到了才回）
-        if self.force_suppress and self.presence.ratio(sid, now) > self.presence.target_ratio:
+        # 强制通路超额抑制：占比超标时被唤醒降级为评分门槛（分值到了才回）。
+        # 刚被休眠唤醒的消息（起夜命中）是明确用户意图，不受存在感抑制
+        if not _just_woken and self.force_suppress and self.presence.ratio(sid, now) > self.presence.target_ratio:
             mentioned = getattr(event.message, "is_mentioned", False) or event.is_mentioned
             if mentioned and self.presence.score(sid, now) < self.score_threshold:
                 event._enhance_force_suppressed = True
