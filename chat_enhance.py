@@ -591,10 +591,11 @@ class ChatEnhanceEngine:
         for m in getattr(event.message, "chain", []):
             if _Reply is not None and isinstance(m, _Reply):
                 return "reply"
-        # at（@ 提及）
+        # at / 关键词（宿主 handle_msg 已标记 _wake_source 区分来源）
         if getattr(event.message, "is_mentioned", False) or getattr(event, "is_mentioned", False):
-            # 区分 at 与关键词唤醒：宿主 handle_msg 里唤醒词命中也会置 is_mentioned。
-            # 无法从事件区分时，优先按 at 处理（keyword 检测默认关，影响小）
+            src = getattr(event, "_wake_source", None)
+            if src == "keyword":
+                return "keyword"
             return "at"
         return None
 
