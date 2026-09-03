@@ -625,10 +625,11 @@ class ChatEnhanceEngine:
             if getattr(p, "name", "") == "chat_env":
                 p.content = (p.content or "") + "\n" + text
                 return
-        # 无 chat_env 段时追加到消息列表
+        # 无 chat_env 段时追加一个（避免裸 dict 消息格式问题）
         try:
-            from core.chat.message_elements import Text
-            req.messages.append({"role": "system", "content": text})
+            req.system_prompt.append(
+                type("_SP", (), {"name": "chat_env", "content": text})()
+            )
         except Exception:
             pass
 
@@ -660,8 +661,9 @@ class ChatEnhanceEngine:
         - 概率命中 + 评分不足 → 作废（不触发，分数保留继续攒）
         - 概率未命中 + 评分够 → 补触发
         - 未启用评分门控 → 原样返回概率命中结果
+        - 阈值 ≤ 0 → 视为不设门槛，原样返回（避免恒补触发）
         """
-        if not self.score_gate_enabled:
+        if not self.score_gate_enabled or self.score_threshold <= 0:
             return prob_hit
         now = time.time()
         score = self.presence.score(sid, now)
