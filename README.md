@@ -1,4 +1,4 @@
-# KiraAI_anti_harass_plugin/防骚扰 1.0.1
+# KiraAI_anti_harass_plugin/防骚扰 1.0.4
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/znq19/KiraAI_anti_harass_plugin)
 
@@ -90,12 +90,16 @@ manage_ignore(action="block", target_type="user", target_id="123456", block_type
 
 ## 📝 版本信息
 
-- 当前版本：v1.0.1
+- 当前版本：v1.0.4
 - 兼容 KiraAI：v2.29.6+
 - 作者：znq19
 
 <details>
 <summary>更新日志</summary>
+
+### v1.0.4
+
+- 同步 chat_enhance.py：私聊独立 PresenceThrottle、score_gate 路由修复
 
 ### v1.0.1
 
