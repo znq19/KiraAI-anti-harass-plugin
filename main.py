@@ -176,8 +176,9 @@ class AntiHarassPlugin(BasePlugin):
     @on.im_message(priority=Priority.HIGH)
     async def handle_msg(self, event: KiraMessageEvent):
         sid = event.session.sid
-        # 记录最近会话（ignore tag 处理器用）
-        self._last_ignore_sid = sid
+        # 注意：不在此记录 _last_ignore_sid（旧实现）。ignore tag 是 LLM 回复的
+        # 输出，on_llm_response 已记录本次回复所属会话；handle_msg 里记录会被
+        # 任意新消息（含不触发 LLM 的围观消息）覆盖，造成 tag 作用到错误会话的竞态。
         now = time.time()
         user_id = str(event.message.sender.user_id) if event.message.sender else "unknown"
 
@@ -201,6 +202,20 @@ class AntiHarassPlugin(BasePlugin):
             if n >= self.session_msgs_threshold:
                 self._extra_counts[sid]["session_msgs"].clear()
                 await self._send_notice(sid, self._build_extra_notice("session_msgs", user_id, n, self.session_msgs_window, self.session_msgs_threshold))
+
+    @on.llm_response(priority=Priority.HIGH)
+    async def on_llm_response(self, event: KiraMessageBatchEvent, resp, *_):
+        # 记录本次 LLM 回复所属会话（ignore tag 处理器用）。
+        # 必须在最终文本回复时写：与 tag 解析之间无 await，原子，避免 handle_msg
+        # 期间其他会话消息覆盖导致 tag 作用到错误会话。
+        if getattr(resp, "tool_calls", None):
+            return
+        try:
+            sid = str(event.sid)
+        except Exception:
+            sid = None
+        if sid:
+            self._last_ignore_sid = sid
 
     @on.message_sent(priority=Priority.LOW)
     async def on_message_sent(self, event, *_, **__):
