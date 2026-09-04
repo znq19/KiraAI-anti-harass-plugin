@@ -80,6 +80,8 @@ class AntiHarassPlugin(BasePlugin):
         self.max_duration = _safe_int(ig.get("max_duration"), 0)
         self.notify_unblock = bool(ig.get("notify_unblock", True))
         self.persist = bool(ig.get("persist", True))
+        # 主动屏蔽工具开关（manage_ignore）：关闭后 bot 不再能主动屏蔽骚扰
+        self.enable_manage_ignore = bool(ig.get("enable_manage_ignore", True))
         # 作用域/白名单（section_harass_scope）
         hscope = cfg.get("section_harass_scope", {}) or {}
         self.harass_scope_sessions = hscope.get("harass_scope_sessions", [])
@@ -237,6 +239,32 @@ class AntiHarassPlugin(BasePlugin):
             sid = None
         if sid:
             self._last_ignore_sid = sid
+
+    @on.llm_request(priority=Priority.HIGH)
+    async def on_llm_request(self, event: KiraMessageBatchEvent, req: LLMRequest, *_):
+        # 主动屏蔽工具开关：关闭时从 tool_set 移除 manage_ignore（bot 不再能主动屏蔽）
+        if not self.enable_manage_ignore:
+            self._filter_tools(req.tool_set, ["manage_ignore"], "exact")
+            logger.debug("[AntiHarass] manage_ignore 工具已禁用（enable_manage_ignore=false）")
+
+    def _filter_tools(self, tool_set, blacklist, mode: str):
+        """按黑名单过滤 ToolSet（BaseTool 实例，tool.name + remove）。"""
+        if not blacklist or not tool_set or not getattr(tool_set, "tools", None):
+            return
+        to_remove: list[str] = []
+        for tool in list(tool_set.tools):
+            name = getattr(tool, "name", None) or ""
+            if not name:
+                continue
+            if mode == "partial":
+                if any(kw in name for kw in blacklist):
+                    to_remove.append(name)
+            else:
+                if name in blacklist:
+                    to_remove.append(name)
+        if to_remove:
+            tool_set.remove(*to_remove)
+            logger.debug(f"[AntiHarass] 已从 tool_set 移除工具: {to_remove}")
 
     @on.message_sent(priority=Priority.LOW)
     async def on_message_sent(self, event, *_, **__):

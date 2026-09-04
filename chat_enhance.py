@@ -567,6 +567,10 @@ class ChatEnhanceEngine:
         self.merger = NoticeMerger(plugin, merge_seconds)
         self.score_gate_enabled = bool(cfg.get("score_gate_enabled", False))
         self.score_threshold = _safe_float(cfg.get("score_threshold"), 60.0)
+        # 评分补正独立开关：群聊持续对话 / 私聊持续对话 各自独立控制
+        # （默认 false，与全局 score_gate_enabled 默认一致；开启后该通路受评分补正）
+        self.sustain_score_gate_enabled = bool(cfg.get("sustain_score_gate_enabled", False))
+        self.dm_sustain_score_gate_enabled = bool(cfg.get("dm_sustain_score_gate_enabled", False))
         self.force_suppress = bool(cfg.get("force_suppress", False))
         self._prune_task: Optional[asyncio.Task] = None
 
@@ -707,15 +711,25 @@ class ChatEnhanceEngine:
 
     # ---- 评分补正（宿主概率触发处调用） ----
 
-    def score_gate(self, sid: str, prob_hit: bool) -> bool:
+    def score_gate(self, sid: str, prob_hit: bool, scope: str = "default") -> bool:
         """评分补正：返回是否应触发。
 
         - 概率命中 + 评分不足 → 作废（不触发，分数保留继续攒）
         - 概率未命中 + 评分够 → 补触发
         - 未启用评分门控 → 原样返回概率命中结果
         - 阈值 ≤ 0 → 视为不设门槛，原样返回（避免恒补触发）
+        - scope 独立开关：sustain/dm_sustain 各自独立控制（默认 false），
+          未开启时该通路不受评分补正（原样返回）
         """
-        if not self.score_gate_enabled or self.score_threshold <= 0:
+        if scope == "sustain":
+            if not self.sustain_score_gate_enabled:
+                return prob_hit
+        elif scope == "dm_sustain":
+            if not self.dm_sustain_score_gate_enabled:
+                return prob_hit
+        elif not self.score_gate_enabled:
+            return prob_hit
+        if self.score_threshold <= 0:
             return prob_hit
         now = time.time()
         score = self.presence.score(sid, now)
