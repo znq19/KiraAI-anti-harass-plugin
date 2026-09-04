@@ -116,8 +116,16 @@ class AntiHarassPlugin(BasePlugin):
     async def terminate(self):
         if self._persist_task and not self._persist_task.done():
             self._persist_task.cancel()
+            try:
+                await asyncio.wait_for(self._persist_task, timeout=3.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
         if self._prune_task and not self._prune_task.done():
             self._prune_task.cancel()
+            try:
+                await asyncio.wait_for(self._prune_task, timeout=3.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
         self._save_persist()
         logger.info("[AntiHarass] 防骚扰插件已终止")
 
@@ -409,6 +417,9 @@ class AntiHarassPlugin(BasePlugin):
             duration = self.default_ignore_duration
         if self.max_duration > 0:
             duration = min(duration, self.max_duration)
-        if target_type in ("all", "session"):
+        if target_type == "all":
+            # 全局屏蔽：作用于所有会话（与 s/z 版一致，键 (sid="*", user="*")）
+            return self.harass.apply_ignore("*", "*", block_type, duration)
+        if target_type == "session":
             return self.harass.apply_ignore(sid, "*", block_type, duration)
         return self.harass.apply_ignore(sid, target_id, block_type, duration)

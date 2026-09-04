@@ -29,6 +29,11 @@ except Exception:
     _Text = None
     _Reply = None
 
+try:
+    from core.prompt_manager import Prompt as _Prompt
+except Exception:
+    _Prompt = None
+
 
 def _safe_int(v, default: int) -> int:
     """安全整数转换：None/非法类型/非法值回退默认。"""
@@ -334,6 +339,16 @@ class HarassDetector:
         now = time.time()
         for key in [k for k, v in self._ignored.items() if v <= now]:
             self._ignored.pop(key, None)
+        # 回收 7 天无活动的检测计数（_counts / _last_trigger_user_map），防长期运行内存增长
+        for sid in list(self._counts.keys()):
+            last = 0.0
+            for dq in self._counts[sid].values():
+                if dq:
+                    last = max(last, dq[-1][0])
+            if now - last > 7 * 24 * 3600:
+                self._counts.pop(sid, None)
+                for key in [k for k in self._last_trigger_user_map if k[0] == sid]:
+                    self._last_trigger_user_map.pop(key, None)
 
 
 # ---------------------------------------------------------------------------
@@ -496,11 +511,17 @@ class NoticeMerger:
         self._merge_seconds = max(0.5, merge_seconds)
         self._pending: dict[str, list] = defaultdict(list)
         self._flush_tasks: dict[str, asyncio.Task] = {}
+        self._publish_tasks: set = set()
 
     def queue(self, sid: str, text: str) -> None:
         self._pending[sid].append(text)
         if sid not in self._flush_tasks or self._flush_tasks[sid].done():
-            self._flush_tasks[sid] = asyncio.create_task(self._flush_later(sid))
+            try:
+                self._flush_tasks[sid] = asyncio.create_task(self._flush_later(sid))
+            except RuntimeError:
+                # 事件循环外调用（测试/错误时序）：直接同步 flush，避免通知丢失
+                self._flush_tasks.pop(sid, None)
+                self.flush(sid)
 
     async def _flush_later(self, sid: str) -> None:
         try:
@@ -527,7 +548,16 @@ class NoticeMerger:
             return
         text = "\n".join(items)
         try:
-            asyncio.create_task(self._publish(sid, text))
+            t = asyncio.create_task(self._publish(sid, text))
+            self._publish_tasks.add(t)
+            t.add_done_callback(self._publish_tasks.discard)
+        except RuntimeError:
+            # 事件循环外调用：同步 publish（尽力而为，失败记录）
+            logger.warning(f"[Enhance] 通知合并 publish 在事件循环外调用，同步执行: {sid}")
+            try:
+                asyncio.get_event_loop().run_until_complete(self._publish(sid, text))
+            except Exception as e:
+                logger.warning(f"[Enhance] 通知合并 publish 失败: {e}")
         except Exception as e:
             logger.warning(f"[Enhance] 通知合并 publish 失败: {e}")
 
@@ -548,6 +578,15 @@ class NoticeMerger:
             if not task.done():
                 task.cancel()
         self._flush_tasks.clear()
+        # 等待正在 publish 的任务完成（避免对已销毁 ctx 调用）
+        if self._publish_tasks:
+            try:
+                asyncio.get_event_loop().run_until_complete(
+                    asyncio.gather(*self._publish_tasks, return_exceptions=True)
+                )
+            except Exception:
+                pass
+        self._publish_tasks.clear()
         self._pending.clear()
 
 
@@ -593,9 +632,13 @@ class ChatEnhanceEngine:
             except Exception:
                 logger.exception("[Enhance] prune loop error")
 
-    def shutdown(self) -> None:
+    async def shutdown(self) -> None:
         if self._prune_task and not self._prune_task.done():
             self._prune_task.cancel()
+            try:
+                await asyncio.wait_for(self._prune_task, timeout=3.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
         self.merger.shutdown()
 
     # ---- 消息入口（宿主 handle_msg 调用） ----
@@ -668,7 +711,7 @@ class ChatEnhanceEngine:
     # ---- LLM 请求（宿主 on_llm_request 调用）：注入合并通知 ----
 
     def on_llm_request(self, event, req) -> None:
-        sid = getattr(event, "sid", None) or getattr(event, "session", None)
+        sid = getattr(event, "sid", None) or getattr(getattr(event, "session", None), "sid", None)
         if sid is None:
             return
         sid = str(sid)
@@ -676,18 +719,28 @@ class ChatEnhanceEngine:
         if not items:
             return
         text = "\n".join(items)
-        # 注入到 system prompt 的 chat_env 段
-        for p in getattr(req, "system_prompt", []) or []:
-            if getattr(p, "name", "") == "chat_env":
-                p.content = (p.content or "") + "\n" + text
-                return
-        # 无 chat_env 段时追加一个（避免裸 dict 消息格式问题）
+        # 注入到 system prompt 的 chat_env 段（先注入，失败则把通知放回队列）
         try:
-            req.system_prompt.append(
-                type("_SP", (), {"name": "chat_env", "content": text})()
-            )
+            for p in getattr(req, "system_prompt", []) or []:
+                if getattr(p, "name", "") == "chat_env":
+                    p.content = (p.content or "") + "\n" + text
+                    return
+            # 无 chat_env 段时追加一个框架 Prompt 实例（框架序列化按 isinstance(p, Prompt) 过滤，
+            # 裸对象/裸 dict 会被静默丢弃——见 core/provider/llm_model.py）
+            if _Prompt is not None:
+                req.system_prompt.append(
+                    _Prompt(text, name="chat_env", source="system", render_template=False)
+                )
+            else:
+                # 框架模块不可用（测试环境）：尽力追加，失败放回队列
+                req.system_prompt.append(
+                    type("_SP", (), {"name": "chat_env", "content": text})()
+                )
         except Exception:
-            pass
+            # 注入失败：通知放回队列，等待下次请求或短窗口兜底
+            logger.exception("[Enhance] 通知注入 system prompt 失败，放回队列")
+            for item in items:
+                self.merger.queue(sid, item)
 
     # ---- LLM 响应（宿主 on_llm_response 调用）：存在感记录 + 维持期 ----
 
