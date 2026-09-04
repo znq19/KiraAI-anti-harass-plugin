@@ -643,12 +643,14 @@ class ChatEnhanceEngine:
         self.harass = HarassDetector(cfg, plugin)
         self.dormant = DormantState(cfg)
         self.merger = NoticeMerger(plugin, merge_seconds)
-        self.score_gate_enabled = bool(cfg.get("score_gate_enabled", False))
         self.score_threshold = _safe_float(cfg.get("score_threshold"), 60.0)
-        # 评分补正独立开关：群聊持续对话 / 私聊持续对话 各自独立控制
-        # （默认 false，与全局 score_gate_enabled 默认一致；开启后该通路受评分补正）
-        self.sustain_score_gate_enabled = bool(cfg.get("sustain_score_gate_enabled", False))
-        self.dm_sustain_score_gate_enabled = bool(cfg.get("dm_sustain_score_gate_enabled", False))
+        # 评分补正：门槛过滤 + 补偿触发 独立控制（三个通路各自独立）
+        self.score_gate_deny = bool(cfg.get("score_gate_deny", False))
+        self.score_gate_boost = bool(cfg.get("score_gate_boost", False))
+        self.sustain_score_gate_deny = bool(cfg.get("sustain_score_gate_deny", False))
+        self.sustain_score_gate_boost = bool(cfg.get("sustain_score_gate_boost", False))
+        self.dm_sustain_score_gate_deny = bool(cfg.get("dm_sustain_score_gate_deny", False))
+        self.dm_sustain_score_gate_boost = bool(cfg.get("dm_sustain_score_gate_boost", False))
         self.force_suppress = bool(cfg.get("force_suppress", False))
         self._prune_task: Optional[asyncio.Task] = None
 
@@ -803,41 +805,45 @@ class ChatEnhanceEngine:
 
     # ---- 评分补正（宿主概率触发处调用） ----
 
-    def score_gate(self, sid: str, prob_hit: bool, scope: str = "default", prob: float = None) -> bool:
+    def score_gate(self, sid: str, prob_hit: bool, scope: str = "default") -> bool:
         """评分补正：返回是否应触发（累计加分机制）。
 
-        - 概率命中 + 评分不足 → 作废（不触发，分数保留继续攒）
-        - 概率命中 + 评分够 → 触发并清零累计分
-        - 概率未命中 + 评分够 → 必补触发（评分攒满即必补，触发后清零；
-          频率由累计加分控制——攒满阈值需要 N 条用户消息，不会每条都触发）
-        - 未启用评分门控 → 原样返回概率命中结果
-        - 阈值 ≤ 0 → 视为不设门槛，原样返回（避免恒补触发）
-        - scope 独立开关：sustain/dm_sustain 各自独立控制（默认 false），
-          未开启时该通路不受评分补正（原样返回）
+        三个通路（default/sustain/dm_sustain）各有 deny（门槛过滤）和 boost（补偿触发）独立开关。
+        默认全关 → 评分系统未激活，原样返回概率命中结果。
+
+        deny  概率命中 + 评分不足 → 作废（分数保留继续攒）
+        boost 概率未命中 + 评分够 → 强制触发（必补），触发后清零
+        deny+boost 同时开启 → 两者都生效（分不够拦、分够了补）
         """
-        if scope == "sustain":
-            if not self.sustain_score_gate_enabled:
-                return prob_hit
-        elif scope == "dm_sustain":
-            if not self.dm_sustain_score_gate_enabled:
-                return prob_hit
-        elif not self.score_gate_enabled:
+        deny, boost = self._score_gate_flags(scope)
+        if not deny and not boost:
             return prob_hit
         if self.score_threshold <= 0:
             return prob_hit
         now = time.time()
         score = self.presence.score(sid, now)
         # 闲时加分：静默超该会话历史平均 × idle_bonus_ratio 时 +idle_bonus
-        # （冷场更容易开口；活跃群不满足相对判定 → 不加分，按正常节奏攒分）
         if self.presence.idle_bonus > 0 and self.presence.idle_bonus_ok(sid, now):
             score += self.presence.idle_bonus
         if prob_hit and score < self.score_threshold:
-            return False
+            # 概率命中 + 评分不足 → deny 开启时拦下
+            if deny:
+                return False
         if score >= self.score_threshold:
-            # 评分够：概率命中或未命中都触发（必补），触发后清零（触发即清分）
-            self.presence.consume_score(sid)
-            return True
+            # 评分够 → boost 开启时（或 deny+boost 同时开）触发并清零
+            if boost:
+                self.presence.consume_score(sid)
+                return True
         return prob_hit
+
+    def _score_gate_flags(self, scope: str) -> tuple[bool, bool]:
+        """返回 (deny, boost) 用于给定 scope。"""
+        if scope == "sustain":
+            return self.sustain_score_gate_deny, self.sustain_score_gate_boost
+        elif scope == "dm_sustain":
+            return self.dm_sustain_score_gate_deny, self.dm_sustain_score_gate_boost
+        else:
+            return self.score_gate_deny, self.score_gate_boost
 
     def k_prob(self, sid: str) -> float:
         return self.presence.k_prob(sid, time.time())
