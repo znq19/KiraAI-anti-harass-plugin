@@ -194,7 +194,7 @@ class AntiHarassPlugin(BasePlugin):
     # ---- 消息入口 ----
 
     @on.im_message(priority=Priority.HIGH)
-    async def handle_msg(self, event: KiraMessageEvent):
+    async def handle_msg(self, event: KiraMessageEvent, *_):
         sid = event.session.sid
         # 注意：不在此记录 _last_ignore_sid（旧实现）。ignore tag 是 LLM 回复的
         # 输出，on_llm_response 已记录本次回复所属会话；handle_msg 里记录会被
