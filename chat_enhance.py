@@ -69,6 +69,8 @@ class PresenceThrottle:
         self.k_max = max(self.k_min, _safe_float(cfg.get("presence_k_max"), 2.0))
         self.score_threshold = max(0.0, _safe_float(cfg.get("score_threshold"), 60.0))
         self.idle_bonus = max(0.0, _safe_float(cfg.get("idle_bonus_score"), 15.0))
+        # 闲时相对判定倍数：静默时长 > 该会话历史平均 × 倍数 才算闲时（默认 1.5）
+        self.idle_bonus_ratio = max(0.0, _safe_float(cfg.get("idle_bonus_ratio"), 1.5))
         self.force_suppress = bool(cfg.get("force_suppress", False))
         self.score_gate_enabled = bool(cfg.get("score_gate_enabled", False))
         # 累计加分（评分补正用）：用户消息 +1，bot 回复 -5，攒到阈值补触发一次后清零
@@ -142,7 +144,7 @@ class PresenceThrottle:
             return False
         gap = now - prev
         avg = self._idle_avg.get(sid, 0.0)
-        return avg > 0 and gap > avg * 1.5
+        return avg > 0 and gap > avg * self.idle_bonus_ratio
 
     # ---- 回收 ----
 
@@ -806,8 +808,8 @@ class ChatEnhanceEngine:
 
         - 概率命中 + 评分不足 → 作废（不触发，分数保留继续攒）
         - 概率命中 + 评分够 → 触发并清零累计分
-        - 概率未命中 + 评分够 → 以原始概率 prob 的概率补触发（不放大概率：
-          0.01 就是 0.01，评分只决定"是否允许补"，不放大触发频率），触发后清零
+        - 概率未命中 + 评分够 → 必补触发（评分攒满即必补，触发后清零；
+          频率由累计加分控制——攒满阈值需要 N 条用户消息，不会每条都触发）
         - 未启用评分门控 → 原样返回概率命中结果
         - 阈值 ≤ 0 → 视为不设门槛，原样返回（避免恒补触发）
         - scope 独立开关：sustain/dm_sustain 各自独立控制（默认 false），
@@ -825,19 +827,16 @@ class ChatEnhanceEngine:
             return prob_hit
         now = time.time()
         score = self.presence.score(sid, now)
+        # 闲时加分：静默超该会话历史平均 × idle_bonus_ratio 时 +idle_bonus
+        # （冷场更容易开口；活跃群不满足相对判定 → 不加分，按正常节奏攒分）
+        if self.presence.idle_bonus > 0 and self.presence.idle_bonus_ok(sid, now):
+            score += self.presence.idle_bonus
         if prob_hit and score < self.score_threshold:
             return False
-        if prob_hit and score >= self.score_threshold:
-            # 概率命中 + 评分够：触发并清零（触发即清分）
+        if score >= self.score_threshold:
+            # 评分够：概率命中或未命中都触发（必补），触发后清零（触发即清分）
             self.presence.consume_score(sid)
             return True
-        if not prob_hit and score >= self.score_threshold:
-            # 补触发受原始概率约束：prob 未传时用 prob_hit 本身（≈0，几乎不补）
-            p = prob if prob is not None else 0.0
-            if random.random() < p:
-                self.presence.consume_score(sid)
-                return True
-            return False
         return prob_hit
 
     def k_prob(self, sid: str) -> float:
