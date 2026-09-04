@@ -1,4 +1,4 @@
-# KiraAI_anti_harass_plugin/防骚扰 1.0.0
+# KiraAI_anti_harass_plugin/防骚扰 1.0.1
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/znq19/KiraAI_anti_harass_plugin)
 
@@ -90,14 +90,17 @@ manage_ignore(action="block", target_type="user", target_id="123456", block_type
 
 ## 📝 版本信息
 
-- 当前版本：v1.0.0
+- 当前版本：v1.0.1
 - 兼容 KiraAI：v2.29.6+
 - 作者：znq19
 
 <details>
 <summary>更新日志</summary>
 
-### v1.0.0
+### v1.0.1
+
+- 拉黑语义：屏蔽=该用户/会话所有消息不再进入（含戳一戳/at/关键词/引用/刷屏）；type:poke 单独屏蔽只挡戳一戳
+- 累计评分：用户消息 +1、bot 回复 -5，攒到阈值补触发一次后清零（必补）
 
 **首个独立版本**
 
