@@ -38,7 +38,7 @@ try:
     from core.chat import MessageChain
 except Exception:
     MessageChain = None
-from chat_enhance import HarassDetector
+from chat_enhance import HarassDetector, _safe_int, _safe_float
 
 # 额外信号（bot 发言/单用户消息/会话消息）的检测键
 EXTRA_KINDS = ("bot_speech", "user_msgs", "session_msgs")
@@ -68,15 +68,15 @@ class AntiHarassPlugin(BasePlugin):
         self.detect_bot_speech = bool(detect.get("detect_bot_speech", False))
         self.detect_user_msgs = bool(detect.get("detect_user_msgs", False))
         self.detect_session_msgs = bool(detect.get("detect_session_msgs", False))
-        self.bot_speech_window = float(th.get("bot_speech_window_seconds", 300))
-        self.bot_speech_threshold = int(th.get("bot_speech_threshold", 10))
-        self.user_msgs_window = float(th.get("user_msgs_window_seconds", 60))
-        self.user_msgs_threshold = int(th.get("user_msgs_threshold", 10))
-        self.session_msgs_window = float(th.get("session_msgs_window_seconds", 60))
-        self.session_msgs_threshold = int(th.get("session_msgs_threshold", 20))
-        self.default_ignore_duration = int(ig.get("default_ignore_duration", 180))
-        self.fixed_duration = int(ig.get("fixed_duration", 0))
-        self.max_duration = int(ig.get("max_duration", 0))
+        self.bot_speech_window = _safe_float(th.get("bot_speech_window_seconds"), 300)
+        self.bot_speech_threshold = _safe_int(th.get("bot_speech_threshold"), 10)
+        self.user_msgs_window = _safe_float(th.get("user_msgs_window_seconds"), 60)
+        self.user_msgs_threshold = _safe_int(th.get("user_msgs_threshold"), 10)
+        self.session_msgs_window = _safe_float(th.get("session_msgs_window_seconds"), 60)
+        self.session_msgs_threshold = _safe_int(th.get("session_msgs_threshold"), 20)
+        self.default_ignore_duration = _safe_int(ig.get("default_ignore_duration"), 180)
+        self.fixed_duration = _safe_int(ig.get("fixed_duration"), 0)
+        self.max_duration = _safe_int(ig.get("max_duration"), 0)
         self.notify_unblock = bool(ig.get("notify_unblock", True))
         self.persist = bool(ig.get("persist", True))
         # 作用域/白名单（section_harass_scope）
@@ -89,8 +89,8 @@ class AntiHarassPlugin(BasePlugin):
         for kind, key in (("poke", "poke"), ("at", "at"), ("keyword", "keyword"), ("reply", "reply")):
             self._harass_cfg[f"section_{kind}"] = {
                 "enabled": bool(detect.get(f"detect_{key}", kind in ("poke", "at"))),
-                "window_seconds": float(th.get(f"{key}_window_seconds", 60)),
-                "threshold": int(th.get(f"{key}_threshold", 3 if kind != "keyword" else 5)),
+                "window_seconds": _safe_float(th.get(f"{key}_window_seconds"), 60),
+                "threshold": _safe_int(th.get(f"{key}_threshold"), 3 if kind != "keyword" else 5),
                 "default_duration": self.default_ignore_duration,
                 "allow_bot_duration": True,
                 "max_duration": self.max_duration,
@@ -214,8 +214,9 @@ class AntiHarassPlugin(BasePlugin):
     @on.llm_response(priority=Priority.HIGH)
     async def on_llm_response(self, event: KiraMessageBatchEvent, resp, *_):
         # 记录本次 LLM 回复所属会话（ignore tag 处理器用）。
-        # 必须在最终文本回复时写：与 tag 解析之间无 await，原子，避免 handle_msg
-        # 期间其他会话消息覆盖导致 tag 作用到错误会话。
+        # 必须在最终文本回复时写：框架 tag 处理器无 event 上下文，_last_ignore_sid
+        # 是唯一通道。写入已把竞态窗口缩到最小（on_llm_response 返回后框架才解析
+        # XML 执行 tag，多会话并发回复时可能被覆盖，已知限制）。
         if getattr(resp, "tool_calls", None):
             return
         try:

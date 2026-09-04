@@ -29,6 +29,22 @@ except Exception:
     _Text = None
     _Reply = None
 
+
+def _safe_int(v, default: int) -> int:
+    """安全整数转换：None/非法类型/非法值回退默认。"""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(v, default: float) -> float:
+    """安全浮点转换：None/非法类型/非法值回退默认。"""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
 # ---------------------------------------------------------------------------
 # 存在感节流
 # ---------------------------------------------------------------------------
@@ -41,13 +57,13 @@ class PresenceThrottle:
     """
 
     def __init__(self, cfg: dict):
-        self.window_size = max(2, int(cfg.get("presence_window_size", 20)))
-        self.decay_minutes = max(0.0, float(cfg.get("presence_decay_minutes", 10)))
-        self.target_ratio = max(0.01, min(0.99, float(cfg.get("presence_target_ratio", 0.3))))
-        self.k_min = max(0.01, float(cfg.get("presence_k_min", 0.2)))
-        self.k_max = max(self.k_min, float(cfg.get("presence_k_max", 2.0)))
-        self.score_threshold = max(0.0, float(cfg.get("score_threshold", 60.0)))
-        self.idle_bonus = max(0.0, float(cfg.get("idle_bonus_score", 15.0)))
+        self.window_size = max(2, _safe_int(cfg.get("presence_window_size"), 20))
+        self.decay_minutes = max(0.0, _safe_float(cfg.get("presence_decay_minutes"), 10))
+        self.target_ratio = max(0.01, min(0.99, _safe_float(cfg.get("presence_target_ratio"), 0.3)))
+        self.k_min = max(0.01, _safe_float(cfg.get("presence_k_min"), 0.2))
+        self.k_max = max(self.k_min, _safe_float(cfg.get("presence_k_max"), 2.0))
+        self.score_threshold = max(0.0, _safe_float(cfg.get("score_threshold"), 60.0))
+        self.idle_bonus = max(0.0, _safe_float(cfg.get("idle_bonus_score"), 15.0))
         self.force_suppress = bool(cfg.get("force_suppress", False))
         self.score_gate_enabled = bool(cfg.get("score_gate_enabled", False))
         # sid -> deque[(ts, is_bot)]，容量 512
@@ -163,11 +179,11 @@ class HarassDetector:
             sec = cfg.get(f"section_{kind}", {}) or {}
             self._conf[kind] = {
                 "enabled": bool(sec.get("enabled", kind in ("poke", "at"))),
-                "window": max(1.0, float(sec.get("window_seconds", 60))),
-                "threshold": max(1, int(sec.get("threshold", 3))),
-                "default_duration": max(1, int(sec.get("default_duration", 180))),
+                "window": max(1.0, _safe_float(sec.get("window_seconds"), 60)),
+                "threshold": max(1, _safe_int(sec.get("threshold"), 3)),
+                "default_duration": max(1, _safe_int(sec.get("default_duration"), 180)),
                 "allow_bot_duration": bool(sec.get("allow_bot_duration", True)),
-                "max_duration": max(0, int(sec.get("max_duration", 300))),
+                "max_duration": max(0, _safe_int(sec.get("max_duration"), 300)),
                 "scope": sec.get("scope", "per_user"),
             }
 
@@ -321,11 +337,11 @@ class DormantState:
 
     def __init__(self, cfg: dict):
         self.ranges = self._parse_ranges(cfg.get("dormant_ranges", []))
-        self.wake_prob = max(0.0, min(1.0, float(cfg.get("dormant_wake_probability", 0.3))))
+        self.wake_prob = max(0.0, min(1.0, _safe_float(cfg.get("dormant_wake_probability"), 0.3)))
         self.keep_mode = cfg.get("wake_keep_mode", "renew")
-        self.keep_seconds = max(1.0, float(cfg.get("wake_keep_seconds", 300)))
-        self.max_rounds = int(cfg.get("wake_max_rounds", -1))
-        self.max_extensions = int(cfg.get("wake_max_extensions", -1))
+        self.keep_seconds = max(1.0, _safe_float(cfg.get("wake_keep_seconds"), 300))
+        self.max_rounds = _safe_int(cfg.get("wake_max_rounds"), -1)
+        self.max_extensions = _safe_int(cfg.get("wake_max_extensions"), -1)
         # 作用域/白名单：scope_sessions 非空时仅这些会话休眠（空=全部）；白名单命中不休眠
         self._scope_sessions = set(str(x) for x in (cfg.get("dormant_scope_sessions") or []))
         self._whitelist_users = set(str(x) for x in (cfg.get("dormant_whitelist_users") or []))
@@ -542,7 +558,7 @@ class ChatEnhanceEngine:
         self.dormant = DormantState(cfg)
         self.merger = NoticeMerger(plugin, merge_seconds)
         self.score_gate_enabled = bool(cfg.get("score_gate_enabled", False))
-        self.score_threshold = float(cfg.get("score_threshold", 60.0))
+        self.score_threshold = _safe_float(cfg.get("score_threshold"), 60.0)
         self.force_suppress = bool(cfg.get("force_suppress", False))
         self._prune_task: Optional[asyncio.Task] = None
 
