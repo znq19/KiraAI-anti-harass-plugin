@@ -23,6 +23,12 @@
         "default": false,
         "hint": "时间窗内命中唤醒词次数达阈值时通知 bot"
       },
+      "waking_words": {
+        "type": "list",
+        "name": "唤醒词",
+        "default": [],
+        "hint": "命中这些词视为关键词唤醒（配合连续关键词检测）。格式如 bot"
+      },
       "detect_bot_speech": {
         "type": "switch",
         "name": "bot 发言条数检测",

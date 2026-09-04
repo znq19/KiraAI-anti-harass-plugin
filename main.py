@@ -68,6 +68,7 @@ class AntiHarassPlugin(BasePlugin):
         self.detect_bot_speech = bool(detect.get("detect_bot_speech", False))
         self.detect_user_msgs = bool(detect.get("detect_user_msgs", False))
         self.detect_session_msgs = bool(detect.get("detect_session_msgs", False))
+        self.waking_words = detect.get("waking_words", [])
         self.bot_speech_window = _safe_float(th.get("bot_speech_window_seconds"), 300)
         self.bot_speech_threshold = _safe_int(th.get("bot_speech_threshold"), 10)
         self.user_msgs_window = _safe_float(th.get("user_msgs_window_seconds"), 60)
@@ -163,7 +164,8 @@ class AntiHarassPlugin(BasePlugin):
             data = {}
             for (sid, uid, kind), until in self.harass._ignored.items():
                 if until > now:
-                    data[f"{sid}|{uid}|{kind}"] = until
+                    # 永久屏蔽（inf）转大数持久化（json 不支持 Infinity）
+                    data[f"{sid}|{uid}|{kind}"] = until if until != float("inf") else now + 10 * 365 * 24 * 3600
             with open(self._persist_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False)
         except Exception as e:
@@ -187,6 +189,16 @@ class AntiHarassPlugin(BasePlugin):
         # 注意：不在此记录 _last_ignore_sid（旧实现）。ignore tag 是 LLM 回复的
         # 输出，on_llm_response 已记录本次回复所属会话；handle_msg 里记录会被
         # 任意新消息（含不触发 LLM 的围观消息）覆盖，造成 tag 作用到错误会话的竞态。
+        # 唤醒词检测（区分真 @ 与唤醒词命中：框架在循环前已标记真 @）
+        _was_mentioned = bool(getattr(event, "is_mentioned", False))
+        for m in getattr(event.message, "chain", []):
+            if isinstance(m, Text) and any(w in m.text for w in self.waking_words):
+                event.message.is_mentioned = True
+                if not _was_mentioned:
+                    event._wake_source = "keyword"
+                break
+        if _was_mentioned:
+            event._wake_source = "at"
         now = time.time()
         user_id = str(event.message.sender.user_id) if event.message.sender else "unknown"
 
@@ -252,6 +264,10 @@ class AntiHarassPlugin(BasePlugin):
             if isinstance(m, Reply):
                 return "reply"
         if getattr(event.message, "is_mentioned", False) or getattr(event, "is_mentioned", False):
+            # 区分 at 与关键词唤醒：宿主 handle_msg 已标记 _wake_source
+            src = getattr(event, "_wake_source", None)
+            if src == "keyword":
+                return "keyword"
             return "at"
         return None
 

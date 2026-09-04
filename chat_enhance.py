@@ -249,11 +249,15 @@ class HarassDetector:
         kind='all' 时展开为全部 4 类（poke/at/keyword/reply）。返回结果文本。"""
         # kind='all' 时用任一具体 kind 的配置（默认时长/钳制）
         conf = self._conf.get(kind) or self._conf.get("poke", {})
-        if duration <= 0:
-            duration = conf.get("default_duration", 180)
-        if conf.get("allow_bot_duration", True) and conf.get("max_duration", 0) > 0:
-            duration = min(duration, conf["max_duration"])
-        until = time.time() + duration
+        if duration < 0:
+            # -1 = 永久屏蔽（工具描述约定）
+            until = float("inf")
+        else:
+            if duration <= 0:
+                duration = conf.get("default_duration", 180)
+            if conf.get("allow_bot_duration", True) and conf.get("max_duration", 0) > 0:
+                duration = min(duration, conf["max_duration"])
+            until = time.time() + duration
         kinds = self.KINDS if kind == "all" else (kind,)
         for k in kinds:
             self._ignored[(sid, user_id, k)] = until
@@ -319,7 +323,11 @@ class HarassDetector:
             # 全局屏蔽（s="*"）对所有会话可见
             if (s == sid or s == "*") and until > now:
                 scope = "全局" if s == "*" else (f"会话{s}" if uid == "*" else f"用户{uid}")
-                rows.append(f"{scope} {kind} 剩余 {int(until - now)}s")
+                if until == float("inf"):
+                    remain = "永久"
+                else:
+                    remain = f"{int(until - now)}s"
+                rows.append(f"{scope} {kind} 剩余 {remain}")
         return "当前屏蔽: " + ("; ".join(rows) if rows else "无")
 
     def prune(self) -> None:
