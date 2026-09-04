@@ -142,6 +142,11 @@ class HarassDetector:
     def __init__(self, cfg: dict, plugin):
         self._plugin = plugin
         self._load(cfg)
+        # 作用域/白名单（全局，所有类型共用）：
+        # scope_sessions 非空时仅对这些会话检测（空=全部）；白名单命中不检测
+        self._scope_sessions = set(str(x) for x in (cfg.get("harass_scope_sessions") or []))
+        self._whitelist_users = set(str(x) for x in (cfg.get("harass_whitelist_users") or []))
+        self._whitelist_sessions = set(str(x) for x in (cfg.get("harass_whitelist_sessions") or []))
         # sid -> kind -> deque[(ts, user_id)]
         self._counts: dict[str, dict[str, deque]] = defaultdict(
             lambda: {k: deque(maxlen=256) for k in self.KINDS}
@@ -172,6 +177,11 @@ class HarassDetector:
         """记录一次事件；达阈值返回通知文本，未达返回 None。"""
         conf = self._conf.get(kind)
         if not conf or not conf["enabled"]:
+            return None
+        # 作用域/白名单：会话不在作用域内、或用户/会话在白名单 → 不检测
+        if self._scope_sessions and sid not in self._scope_sessions:
+            return None
+        if user_id in self._whitelist_users or sid in self._whitelist_sessions:
             return None
         if self.is_ignored(sid, user_id, kind, now):
             return None
@@ -316,6 +326,10 @@ class DormantState:
         self.keep_seconds = max(1.0, float(cfg.get("wake_keep_seconds", 300)))
         self.max_rounds = int(cfg.get("wake_max_rounds", -1))
         self.max_extensions = int(cfg.get("wake_max_extensions", -1))
+        # 作用域/白名单：scope_sessions 非空时仅这些会话休眠（空=全部）；白名单命中不休眠
+        self._scope_sessions = set(str(x) for x in (cfg.get("dormant_scope_sessions") or []))
+        self._whitelist_users = set(str(x) for x in (cfg.get("dormant_whitelist_users") or []))
+        self._whitelist_sessions = set(str(x) for x in (cfg.get("dormant_whitelist_sessions") or []))
         # sid -> 唤醒到期时间戳
         self._awake_until: dict[str, float] = {}
         # sid -> 已互动次数 / 已续窗次数
@@ -348,10 +362,15 @@ class DormantState:
             out.append((ah * 60 + am, bh * 60 + bm))
         return out
 
-    def in_dormant(self, now_hhmm: str) -> bool:
-        """当前是否在休眠时段内。"""
+    def in_dormant(self, now_hhmm: str, sid: str = None) -> bool:
+        """当前是否在休眠时段内（sid 用于作用域/白名单判断，None 时仅按时段）。"""
         if not self.ranges:
             return False
+        if sid is not None:
+            if self._scope_sessions and sid not in self._scope_sessions:
+                return False
+            if sid in self._whitelist_sessions:
+                return False
         now_min = int(now_hhmm[:2]) * 60 + int(now_hhmm[3:5])
         for start, end in self.ranges:
             if start == end:
@@ -364,9 +383,17 @@ class DormantState:
                     return True
         return False
 
-    def try_wake(self, sid: str, now: float) -> bool:
-        """休眠期内被提及：起夜概率判定。命中则唤醒并返回 True。"""
+    def try_wake(self, sid: str, now: float, user_id: str = None) -> bool:
+        """休眠期内被提及：起夜概率判定。命中则唤醒并返回 True。
+
+        白名单用户/会话不受休眠限制：直接唤醒（填了不生效）。
+        """
         if self.is_awake(sid, now):
+            return True
+        if user_id is not None and user_id in self._whitelist_users:
+            self._awake_until[sid] = now + self.keep_seconds
+            self._rounds[sid] = 0
+            self._extensions[sid] = 0
             return True
         if random.random() < self.wake_prob:
             self._awake_until[sid] = now + self.keep_seconds
@@ -561,10 +588,10 @@ class ChatEnhanceEngine:
 
         # 休眠判定：休眠期内被提及 → 起夜概率
         _just_woken = False
-        if self.dormant.in_dormant(self._now_hhmm()):
+        if self.dormant.in_dormant(self._now_hhmm(), sid):
             mentioned = getattr(event.message, "is_mentioned", False) or event.is_mentioned
             if mentioned and not self.dormant.is_awake(sid, now):
-                if self.dormant.try_wake(sid, now):
+                if self.dormant.try_wake(sid, now, user_id=self._sender_id(event)):
                     self.merger.queue(sid, self.dormant.wake_notice(sid))
                     _just_woken = True
                 else:

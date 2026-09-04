@@ -79,6 +79,11 @@ class AntiHarassPlugin(BasePlugin):
         self.max_duration = int(ig.get("max_duration", 0))
         self.notify_unblock = bool(ig.get("notify_unblock", True))
         self.persist = bool(ig.get("persist", True))
+        # 作用域/白名单（section_harass_scope）
+        hscope = cfg.get("section_harass_scope", {}) or {}
+        self.harass_scope_sessions = hscope.get("harass_scope_sessions", [])
+        self.harass_whitelist_users = hscope.get("harass_whitelist_users", [])
+        self.harass_whitelist_sessions = hscope.get("harass_whitelist_sessions", [])
         # 构造 HarassDetector 需要的 section 结构（section_poke/at/keyword/reply）
         self._harass_cfg = {}
         for kind, key in (("poke", "poke"), ("at", "at"), ("keyword", "keyword"), ("reply", "reply")):
@@ -91,6 +96,9 @@ class AntiHarassPlugin(BasePlugin):
                 "max_duration": self.max_duration,
                 "scope": th.get(f"{key}_scope", "per_user"),
             }
+        self._harass_cfg["harass_scope_sessions"] = self.harass_scope_sessions
+        self._harass_cfg["harass_whitelist_users"] = self.harass_whitelist_users
+        self._harass_cfg["harass_whitelist_sessions"] = self.harass_whitelist_sessions
 
     async def initialize(self):
         self.data_dir = self.ctx.get_plugin_data_dir()
