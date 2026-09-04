@@ -71,11 +71,17 @@ class PresenceThrottle:
         self.idle_bonus = max(0.0, _safe_float(cfg.get("idle_bonus_score"), 15.0))
         self.force_suppress = bool(cfg.get("force_suppress", False))
         self.score_gate_enabled = bool(cfg.get("score_gate_enabled", False))
+        # 累计加分（评分补正用）：用户消息 +1，bot 回复 -5，攒到阈值补触发一次后清零
+        self.score_increment = max(0.0, _safe_float(cfg.get("score_increment"), 1.0))
+        self.score_penalty = max(0.0, _safe_float(cfg.get("score_penalty"), 5.0))
+        self.score_cap = max(1.0, _safe_float(cfg.get("score_cap"), 100.0))
         # sid -> deque[(ts, is_bot)]，容量 512
         self._timeline: dict[str, deque] = defaultdict(lambda: deque(maxlen=512))
         # sid -> 平均静默间隔（秒），用于闲时相对判定
         self._idle_avg: dict[str, float] = defaultdict(float)
         self._last_ts: dict[str, float] = {}
+        # sid -> 累计分（评分补正用）
+        self._scores: dict[str, float] = defaultdict(float)
 
     # ---- 记录 ----
 
@@ -89,6 +95,11 @@ class PresenceThrottle:
             self._idle_avg[sid] = avg * 0.8 + gap * 0.2 if avg else gap
         self._last_ts[sid] = ts
         tl.append((ts, is_bot))
+        # 累计加分：用户消息 +score_increment，bot 回复 -score_penalty（下限 0）
+        if is_bot:
+            self._scores[sid] = max(0.0, self._scores[sid] - self.score_penalty)
+        else:
+            self._scores[sid] = min(self.score_cap, self._scores[sid] + self.score_increment)
 
     def note_bot_reply(self, sid: str, ts: float) -> None:
         self.note_incoming(sid, ts, is_bot=True)
@@ -117,9 +128,12 @@ class PresenceThrottle:
         return max(self.k_min, min(self.k_max, k))
 
     def score(self, sid: str, now: float) -> float:
-        """存在感评分：占比越低分越高（0-100）。用于评分补正判定。"""
-        r = self.ratio(sid, now)
-        return max(0.0, min(100.0, (1.0 - r) * 100.0))
+        """累计分：用户消息 +1、bot 回复 -5 累积，用于评分补正判定。"""
+        return self._scores.get(sid, 0.0)
+
+    def consume_score(self, sid: str) -> None:
+        """触发后清零累计分（触发即清分，防同一批消息重复触发）。"""
+        self._scores.pop(sid, None)
 
     def idle_bonus_ok(self, sid: str, now: float) -> bool:
         """静默时长高于该会话历史平均 → 闲时加分（相对判定，活跃群/死群标准不同）。"""
@@ -143,6 +157,7 @@ class PresenceThrottle:
                 self._timeline.pop(sid, None)
                 self._idle_avg.pop(sid, None)
                 self._last_ts.pop(sid, None)
+                self._scores.pop(sid, None)
                 dropped += 1
         return dropped
 
@@ -249,6 +264,24 @@ class HarassDetector:
             return True
         return False
 
+    def is_blocked(self, sid: str, user_id: str, now: float) -> bool:
+        """拉黑语义：该用户/会话是否有「非 poke」的未过期屏蔽（含全局/会话级）。
+
+        与 is_ignored 的区别：is_ignored 按 kind 精确匹配（检测跳过用）；
+        is_blocked 不看 kind——只要该用户/会话被屏蔽过（无论 poke/at/keyword/
+        reply 还是额外信号），其消息就完全不进 LLM（宿主 handle_msg 入口调用）。
+        """
+        for (s, uid, kind), until in self._ignored.items():
+            if until <= now:
+                continue
+            if kind == "poke":
+                # poke 屏蔽只挡戳一戳（通知事件），不拉黑普通消息
+                continue
+            if s == "*" or s == sid:
+                if uid == "*" or uid == user_id:
+                    return True
+        return False
+
     def apply_ignore(self, sid: str, user_id: str, kind: str, duration: int) -> str:
         """执行屏蔽。user_id='*' 表示该会话内所有用户；sid='*' 表示全局（所有会话）。
         kind='all' 时展开为全部 4 类（poke/at/keyword/reply）。返回结果文本。"""
@@ -263,7 +296,11 @@ class HarassDetector:
             if conf.get("allow_bot_duration", True) and conf.get("max_duration", 0) > 0:
                 duration = min(duration, conf["max_duration"])
             until = time.time() + duration
-        kinds = self.KINDS if kind == "all" else (kind,)
+        if kind == "all":
+            # 拉黑语义：all = 全部形式（含 poke）——该用户/会话消息完全不进 LLM
+            kinds = self.KINDS
+        else:
+            kinds = (kind,)
         for k in kinds:
             self._ignored[(sid, user_id, k)] = until
         if sid == "*":
@@ -764,11 +801,13 @@ class ChatEnhanceEngine:
 
     # ---- 评分补正（宿主概率触发处调用） ----
 
-    def score_gate(self, sid: str, prob_hit: bool, scope: str = "default") -> bool:
-        """评分补正：返回是否应触发。
+    def score_gate(self, sid: str, prob_hit: bool, scope: str = "default", prob: float = None) -> bool:
+        """评分补正：返回是否应触发（累计加分机制）。
 
         - 概率命中 + 评分不足 → 作废（不触发，分数保留继续攒）
-        - 概率未命中 + 评分够 → 补触发
+        - 概率命中 + 评分够 → 触发并清零累计分
+        - 概率未命中 + 评分够 → 以原始概率 prob 的概率补触发（不放大概率：
+          0.01 就是 0.01，评分只决定"是否允许补"，不放大触发频率），触发后清零
         - 未启用评分门控 → 原样返回概率命中结果
         - 阈值 ≤ 0 → 视为不设门槛，原样返回（避免恒补触发）
         - scope 独立开关：sustain/dm_sustain 各自独立控制（默认 false），
@@ -788,8 +827,17 @@ class ChatEnhanceEngine:
         score = self.presence.score(sid, now)
         if prob_hit and score < self.score_threshold:
             return False
-        if not prob_hit and score >= self.score_threshold:
+        if prob_hit and score >= self.score_threshold:
+            # 概率命中 + 评分够：触发并清零（触发即清分）
+            self.presence.consume_score(sid)
             return True
+        if not prob_hit and score >= self.score_threshold:
+            # 补触发受原始概率约束：prob 未传时用 prob_hit 本身（≈0，几乎不补）
+            p = prob if prob is not None else 0.0
+            if random.random() < p:
+                self.presence.consume_score(sid)
+                return True
+            return False
         return prob_hit
 
     def k_prob(self, sid: str) -> float:

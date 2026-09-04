@@ -196,6 +196,15 @@ class AntiHarassPlugin(BasePlugin):
     @on.im_message(priority=Priority.HIGH)
     async def handle_msg(self, event: KiraMessageEvent, *_):
         sid = event.session.sid
+        # === 拉黑拦截：被屏蔽的用户/会话消息完全不进 LLM（不 buffer/flush/不触发） ===
+        try:
+            _uid = str(event.message.sender.user_id) if event.message.sender else "unknown"
+            if self.harass.is_blocked(sid, _uid, time.time()):
+                logger.debug(f"[AntiHarass] 拉黑拦截: {sid} 用户 {_uid} 的消息不进 LLM")
+                event.discard()
+                return
+        except Exception:
+            pass
         # 注意：不在此记录 _last_ignore_sid（旧实现）。ignore tag 是 LLM 回复的
         # 输出，on_llm_response 已记录本次回复所属会话；handle_msg 里记录会被
         # 任意新消息（含不触发 LLM 的围观消息）覆盖，造成 tag 作用到错误会话的竞态。
@@ -329,7 +338,7 @@ class AntiHarassPlugin(BasePlugin):
 
     # ---- XML tag ----
 
-    @register.tag(name="ignore", description="屏蔽骚扰。输出 <ignore>user:X|type:Y|duration:N</ignore> 屏蔽用户 X 的 Y 类骚扰，<ignore>all|type:Y|duration:N</ignore> 屏蔽所有用户，<ignore>none</ignore> 不屏蔽。type 为 poke/at/keyword/reply/bot_speech/user_msgs/session_msgs/all。")
+    @register.tag(name="ignore", description="拉黑用户：屏蔽后该用户/会话的所有消息不再进入（含戳一戳/at/关键词/引用/刷屏）。输出 <ignore>user|duration:N</ignore> 拉黑目标用户，<ignore>all|duration:N</ignore> 拉黑所有用户，<ignore>user|type:poke|duration:N</ignore> 只屏蔽戳一戳（其他形式正常），<ignore>none</ignore> 不屏蔽。duration 为秒，留空用默认值。")
     async def handle_ignore(self, value: str, **kwargs) -> list:
         value = (value or "").strip()
         if not value or value.lower() == "none":
@@ -360,7 +369,7 @@ class AntiHarassPlugin(BasePlugin):
         if self.max_duration > 0:
             duration = min(duration, self.max_duration)
         uid = "*" if target == "all" else (target[5:] if target.startswith("user:") else target)
-        # kind=all 时展开全部 7 类（4 核心 + 3 额外信号）
+        # kind=all 时展开全部 7 类（4 核心 + 3 额外信号）——拉黑语义：all 含 poke
         kinds = ("poke", "at", "keyword", "reply", "bot_speech", "user_msgs", "session_msgs") if kind == "all" else (kind,)
         for k in kinds:
             if uid == "*":
@@ -391,8 +400,8 @@ class AntiHarassPlugin(BasePlugin):
                                 "description": "屏蔽对象：user=某个用户，session=某个会话，all=全局"},
                 "target_id": {"type": "string",
                               "description": "目标 ID：target_type=user 时是用户 ID，=session 时是会话 ID，=all 时留空"},
-                "block_type": {"type": "string", "enum": ["poke", "at", "keyword", "reply", "all"],
-                               "description": "屏蔽的唤醒方式，默认 all", "default": "all"},
+                "block_type": {"type": "string", "enum": ["poke", "all"],
+                               "description": "屏蔽类型：poke=只屏蔽戳一戳（其他形式正常），all=拉黑（该用户/会话所有消息不再进入，含戳一戳）", "default": "all"},
                 "duration": {"type": "integer",
                              "description": "屏蔽时长（秒）。留空用默认；-1 永久", "default": 0},
             },
