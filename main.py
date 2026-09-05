@@ -412,7 +412,9 @@ class AntiHarassPlugin(BasePlugin):
         if action == "unblock":
             if target_type == "all":
                 return "请指定要解除的用户或会话"
-            return self.harass.unblock(sid, target_id, block_type)
+            result = self.harass.unblock(sid, target_id, block_type)
+            logger.info(f"[AntiHarass] 解除屏蔽(工具): {target_type} {target_id} {block_type} → {result}")
+            return result
         if self.fixed_duration > 0:
             duration = self.fixed_duration
         elif duration <= 0:
@@ -421,7 +423,13 @@ class AntiHarassPlugin(BasePlugin):
             duration = min(duration, self.max_duration)
         if target_type == "all":
             # 全局屏蔽：作用于所有会话（与 s/z 版一致，键 (sid="*", user="*")）
-            return self.harass.apply_ignore("*", "*", block_type, duration)
+            result = self.harass.apply_ignore("*", "*", block_type, duration)
+            logger.info(f"[AntiHarass] 屏蔽(工具): all {block_type} {duration}s → {result}")
+            return result
         if target_type == "session":
-            return self.harass.apply_ignore(sid, "*", block_type, duration)
-        return self.harass.apply_ignore(sid, target_id, block_type, duration)
+            result = self.harass.apply_ignore(sid, "*", block_type, duration)
+            logger.info(f"[AntiHarass] 屏蔽(工具): session {sid} {block_type} {duration}s → {result}")
+            return result
+        result = self.harass.apply_ignore(sid, target_id, block_type, duration)
+        logger.info(f"[AntiHarass] 屏蔽(工具): user {target_id} {block_type} {duration}s → {result}")
+        return result
