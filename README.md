@@ -90,12 +90,17 @@ manage_ignore(action="block", target_type="user", target_id="123456", block_type
 
 ## 📝 版本信息
 
-- 当前版本：v1.0.4
+- 当前版本：v1.0.5
 - 兼容 KiraAI：v2.29.6+
 - 作者：znq19
 
 <details>
 <summary>更新日志</summary>
+
+### v1.0.5
+
+- **代码精简**：移除全量 chat_enhance.py 拷贝（890 行），改为独立轻量模块 harass_detect.py（259 行）——只保留本插件实际使用的 HarassDetector + 安全转换辅助，维护更容易、体积减半
+- **修复 allow_bot_duration=False 语义**：bot 不允许自设屏蔽时长时强制用默认时长（之前仍采用建议值）
 
 ### v1.0.4
 

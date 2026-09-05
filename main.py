@@ -22,14 +22,6 @@ _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 if _PLUGIN_DIR not in sys.path:
     sys.path.insert(0, _PLUGIN_DIR)
 
-import importlib
-for _m in ("chat_enhance",):
-    if _m in sys.modules:
-        try:
-            importlib.reload(sys.modules[_m])
-        except Exception:
-            pass
-
 from core.plugin import BasePlugin, logger, on, Priority, register
 from core.chat.message_utils import KiraMessageEvent, KiraMessageBatchEvent
 from core.provider import LLMRequest
@@ -38,7 +30,8 @@ try:
     from core.chat import MessageChain
 except Exception:
     MessageChain = None
-from chat_enhance import HarassDetector, _safe_int, _safe_float
+# 骚扰检测器独立模块（不携带全量 chat_enhance 引擎）
+from harass_detect import HarassDetector, _safe_int, _safe_float
 
 # 额外信号（bot 发言/单用户消息/会话消息）的检测键
 EXTRA_KINDS = ("bot_speech", "user_msgs", "session_msgs")
