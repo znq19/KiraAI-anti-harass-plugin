@@ -1,4 +1,4 @@
-# KiraAI_anti_harass_plugin/防骚扰 1.0.4
+# KiraAI_anti_harass_plugin/防骚扰 v1.1.0
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/znq19/KiraAI_anti_harass_plugin)
 
@@ -90,12 +90,19 @@ manage_ignore(action="block", target_type="user", target_id="123456", block_type
 
 ## 📝 版本信息
 
-- 当前版本：v1.0.5
+- 当前版本：v1.1.0
 - 兼容 KiraAI：v2.29.6+
 - 作者：znq19
 
 <details>
 <summary>更新日志</summary>
+
+### v1.1.0
+
+- **修复私聊消息被误判为 at 骚扰（严重）**：框架 qq.py 私聊消息构造时 `is_mentioned=True` 写死（私聊=天然提及，无 @ 概念），而 `_detect_kind` 未区分群私——私聊每条消息都被统计成 at，60s 3 条即触发"User X at you"系统提示，bot 可能据此回复拉黑 tag。现 `_detect_kind` 对私聊只保留 poke 检测（at/关键词/引用对私聊无意义），私聊不再误判
+- **私聊额外信号独立开关/参数（默认关）**：`dm_detect_user_msgs` / `dm_detect_session_msgs` + `dm_user_msgs_*` / `dm_session_msgs_*` 参数（section_detect / section_thresholds）；群聊 signal 统计不受影响；bot_speech 仅群聊
+- **私聊 bot 可主动拉黑**：额外信号通知带 `<ignore>user:{uid}|type:{kind}|duration:N</ignore>`（定向屏蔽该信号）与全拉黑选项；`<ignore>` tag 支持内嵌用户 ID + `type:` 解析
+- **验证**：私聊 3 条消息不再被判 at；私聊开关默认关、开启后达阈值触发；拉黑链（is_blocked）私聊用户生效（消息被 discard）；回归 6/6+e2e 通过
 
 ### v1.0.5
 

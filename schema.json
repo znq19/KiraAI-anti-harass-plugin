@@ -46,6 +46,18 @@
         "name": "会话消息条数检测",
         "default": false,
         "hint": "时间窗内某会话消息条数达阈值时通知（防群刷屏）"
+      },
+      "dm_detect_user_msgs": {
+        "type": "switch",
+        "name": "私聊-单用户消息条数检测",
+        "default": false,
+        "hint": "私聊中某用户消息条数达阈值时通知（默认关：私聊消息频率属正常交流，主动开启后统计）"
+      },
+      "dm_detect_session_msgs": {
+        "type": "switch",
+        "name": "私聊-会话消息条数检测",
+        "default": false,
+        "hint": "私聊会话消息条数达阈值时通知（默认关）"
       }
     }
   },
@@ -113,6 +125,26 @@
       "session_msgs_threshold": {
         "type": "integer",
         "name": "会话消息阈值",
+        "default": 20
+      },
+      "dm_user_msgs_window_seconds": {
+        "type": "float",
+        "name": "私聊-单用户消息窗口（秒）",
+        "default": 60
+      },
+      "dm_user_msgs_threshold": {
+        "type": "integer",
+        "name": "私聊-单用户消息阈值",
+        "default": 10
+      },
+      "dm_session_msgs_window_seconds": {
+        "type": "float",
+        "name": "私聊-会话消息窗口（秒）",
+        "default": 60
+      },
+      "dm_session_msgs_threshold": {
+        "type": "integer",
+        "name": "私聊-会话消息阈值",
         "default": 20
       }
     }

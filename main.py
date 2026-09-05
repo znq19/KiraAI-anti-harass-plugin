@@ -61,6 +61,10 @@ class AntiHarassPlugin(BasePlugin):
         self.detect_bot_speech = bool(detect.get("detect_bot_speech", False))
         self.detect_user_msgs = bool(detect.get("detect_user_msgs", False))
         self.detect_session_msgs = bool(detect.get("detect_session_msgs", False))
+        # 私聊额外信号独立开关（默认关：私聊是用户主动找 bot 聊天，
+        # 消息频率属正常交流，用户主动开启后才统计）
+        self.dm_detect_user_msgs = bool(detect.get("dm_detect_user_msgs", False))
+        self.dm_detect_session_msgs = bool(detect.get("dm_detect_session_msgs", False))
         self.waking_words = detect.get("waking_words", [])
         self.bot_speech_window = _safe_float(th.get("bot_speech_window_seconds"), 300)
         self.bot_speech_threshold = _safe_int(th.get("bot_speech_threshold"), 10)
@@ -68,6 +72,11 @@ class AntiHarassPlugin(BasePlugin):
         self.user_msgs_threshold = _safe_int(th.get("user_msgs_threshold"), 10)
         self.session_msgs_window = _safe_float(th.get("session_msgs_window_seconds"), 60)
         self.session_msgs_threshold = _safe_int(th.get("session_msgs_threshold"), 20)
+        # 私聊额外信号独立参数（与群聊分离）
+        self.dm_user_msgs_window = _safe_float(th.get("dm_user_msgs_window_seconds"), 60)
+        self.dm_user_msgs_threshold = _safe_int(th.get("dm_user_msgs_threshold"), 10)
+        self.dm_session_msgs_window = _safe_float(th.get("dm_session_msgs_window_seconds"), 60)
+        self.dm_session_msgs_threshold = _safe_int(th.get("dm_session_msgs_threshold"), 20)
         self.default_ignore_duration = _safe_int(ig.get("default_ignore_duration"), 180)
         self.fixed_duration = _safe_int(ig.get("fixed_duration"), 0)
         self.max_duration = _safe_int(ig.get("max_duration"), 0)
@@ -231,19 +240,38 @@ class AntiHarassPlugin(BasePlugin):
             if notice:
                 await self._send_notice(sid, notice)
 
-        # 额外信号
-        if self.detect_user_msgs and not self.harass.is_ignored(sid, user_id, "user_msgs", now):
-            self._extra_counts[sid]["user_msgs"].append((now, user_id))
-            n = sum(1 for ts, u in self._extra_counts[sid]["user_msgs"] if ts >= now - self.user_msgs_window and u == user_id)
-            if n >= self.user_msgs_threshold:
-                self._extra_counts[sid]["user_msgs"].clear()
-                await self._send_notice(sid, self._build_extra_notice("user_msgs", user_id, n, self.user_msgs_window, self.user_msgs_threshold))
-        if self.detect_session_msgs and not self.harass.is_ignored(sid, user_id, "session_msgs", now):
-            self._extra_counts[sid]["session_msgs"].append((now, user_id))
-            n = sum(1 for ts, _ in self._extra_counts[sid]["session_msgs"] if ts >= now - self.session_msgs_window)
-            if n >= self.session_msgs_threshold:
-                self._extra_counts[sid]["session_msgs"].clear()
-                await self._send_notice(sid, self._build_extra_notice("session_msgs", user_id, n, self.session_msgs_window, self.session_msgs_threshold))
+        # 额外信号（user_msgs/session_msgs 群聊与私聊都可检测，各自独立开关/参数：
+        # 群聊走 detect_user_msgs/session_msgs + user/session_msgs_* 参数；
+        # 私聊走 dm_detect_user_msgs/session_msgs + dm_* 参数，默认关。
+        # bot_speech 仅群聊（私聊 bot 发言频率由自身主动逻辑控制，不构成骚扰信号）。
+        _is_group = bool(getattr(event, "is_group_message", lambda: True)())
+        if _is_group:
+            if self.detect_user_msgs and not self.harass.is_ignored(sid, user_id, "user_msgs", now):
+                self._extra_counts[sid]["user_msgs"].append((now, user_id))
+                n = sum(1 for ts, u in self._extra_counts[sid]["user_msgs"] if ts >= now - self.user_msgs_window and u == user_id)
+                if n >= self.user_msgs_threshold:
+                    self._extra_counts[sid]["user_msgs"].clear()
+                    await self._send_notice(sid, self._build_extra_notice("user_msgs", user_id, n, self.user_msgs_window, self.user_msgs_threshold))
+            if self.detect_session_msgs and not self.harass.is_ignored(sid, user_id, "session_msgs", now):
+                self._extra_counts[sid]["session_msgs"].append((now, user_id))
+                n = sum(1 for ts, _ in self._extra_counts[sid]["session_msgs"] if ts >= now - self.session_msgs_window)
+                if n >= self.session_msgs_threshold:
+                    self._extra_counts[sid]["session_msgs"].clear()
+                    await self._send_notice(sid, self._build_extra_notice("session_msgs", user_id, n, self.session_msgs_window, self.session_msgs_threshold))
+        else:
+            # 私聊：独立开关（默认关），避免正常私聊被误判——用户开启后才统计
+            if self.dm_detect_user_msgs and not self.harass.is_ignored(sid, user_id, "user_msgs", now):
+                self._extra_counts[sid]["user_msgs"].append((now, user_id))
+                n = sum(1 for ts, u in self._extra_counts[sid]["user_msgs"] if ts >= now - self.dm_user_msgs_window and u == user_id)
+                if n >= self.dm_user_msgs_threshold:
+                    self._extra_counts[sid]["user_msgs"].clear()
+                    await self._send_notice(sid, self._build_extra_notice("user_msgs", user_id, n, self.dm_user_msgs_window, self.dm_user_msgs_threshold))
+            if self.dm_detect_session_msgs and not self.harass.is_ignored(sid, user_id, "session_msgs", now):
+                self._extra_counts[sid]["session_msgs"].append((now, user_id))
+                n = sum(1 for ts, _ in self._extra_counts[sid]["session_msgs"] if ts >= now - self.dm_session_msgs_window)
+                if n >= self.dm_session_msgs_threshold:
+                    self._extra_counts[sid]["session_msgs"].clear()
+                    await self._send_notice(sid, self._build_extra_notice("session_msgs", user_id, n, self.dm_session_msgs_window, self.dm_session_msgs_threshold))
 
     @on.llm_response(priority=Priority.HIGH)
     async def on_llm_response(self, event: KiraMessageBatchEvent, resp, *_):
@@ -335,6 +363,11 @@ class AntiHarassPlugin(BasePlugin):
             raw = getattr(event, "raw_message", None)
             if isinstance(raw, dict) and raw.get("notice_type") == "notify" and raw.get("sub_type") == "poke":
                 return "poke"
+            return None
+        # 私聊消息：框架（qq.py 私聊路径）is_mentioned 写死 True（私聊=天然提及，
+        # 无 @ 概念），at/关键词/引用检测对私聊无意义——会把正常私聊误判成骚扰。
+        # 只保留上述 poke 检测，其余 kind 对私聊一律不检测。
+        if not getattr(event, "is_group_message", lambda: True)():
             return None
         for m in getattr(event.message, "chain", []):
             if isinstance(m, Reply):
