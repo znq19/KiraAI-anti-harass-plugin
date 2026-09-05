@@ -180,7 +180,12 @@ class HarassDetector:
             scope_txt = f"session {sid}, all users"
         else:
             scope_txt = f"user {user_id} in {sid}"
-        return f"已屏蔽 {scope_txt} 的 {kind} 唤醒 {duration} 秒"
+        # -1 = 永久（until=inf），返回文本显示"永久"避免误导
+        if duration < 0:
+            dur_txt = "永久"
+        else:
+            dur_txt = f"{duration} 秒"
+        return f"已屏蔽 {scope_txt} 的 {kind} 唤醒 {dur_txt}"
 
     def apply_ignore_from_tag(self, sid: str, kind: str, value: str) -> str:
         """解析 XML tag 值：user|duration:N / all|duration:N / none。"""

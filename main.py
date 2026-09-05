@@ -354,12 +354,14 @@ class AntiHarassPlugin(BasePlugin):
             sid = None
         if sid is None:
             return []
-        # 固定时长优先
+        # 固定时长优先；-1 = 永久屏蔽（透传）；0/空 = 用默认时长
         if self.fixed_duration > 0:
             duration = self.fixed_duration
-        elif duration <= 0:
+        elif duration < 0:
+            pass  # -1 永久，交给 apply_ignore 处理
+        elif duration == 0:
             duration = self.default_ignore_duration
-        if self.max_duration > 0:
+        if duration > 0 and self.max_duration > 0:
             duration = min(duration, self.max_duration)
         uid = "*" if target == "all" else (target[5:] if target.startswith("user:") else target)
         # kind=all 时展开全部 7 类（4 核心 + 3 额外信号）——拉黑语义：all 含 poke
@@ -415,11 +417,14 @@ class AntiHarassPlugin(BasePlugin):
             result = self.harass.unblock(sid, target_id, block_type)
             logger.info(f"[AntiHarass] 解除屏蔽(工具): {target_type} {target_id} {block_type} → {result}")
             return result
+        # -1 = 永久屏蔽（工具描述约定），透传不覆盖；0/空 = 用默认时长
         if self.fixed_duration > 0:
             duration = self.fixed_duration
-        elif duration <= 0:
+        elif duration < 0:
+            pass  # -1 永久，交给 apply_ignore 处理
+        elif duration == 0:
             duration = self.default_ignore_duration
-        if self.max_duration > 0:
+        if duration > 0 and self.max_duration > 0:
             duration = min(duration, self.max_duration)
         if target_type == "all":
             # 全局屏蔽：作用于所有会话（与 s/z 版一致，键 (sid="*", user="*")）
