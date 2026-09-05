@@ -198,6 +198,16 @@ class AntiHarassPlugin(BasePlugin):
                 return
         except Exception:
             pass
+        # === poke 屏蔽拦截：poke 单独屏蔽不拉黑普通消息（is_blocked 跳过 poke），
+        #     但戳一戳事件本身要精确拦截：被屏蔽用户的 poke 事件不进 LLM ===
+        try:
+            if self._detect_kind(event) == "poke" and \
+               self.harass.is_ignored(sid, _uid, "poke", time.time()):
+                logger.debug(f"[AntiHarass] poke屏蔽拦截: {sid} 用户 {_uid} 的戳一戳不进 LLM")
+                event.discard()
+                return
+        except Exception:
+            pass
         # 注意：不在此记录 _last_ignore_sid（旧实现）。ignore tag 是 LLM 回复的
         # 输出，on_llm_response 已记录本次回复所属会话；handle_msg 里记录会被
         # 任意新消息（含不触发 LLM 的围观消息）覆盖，造成 tag 作用到错误会话的竞态。
@@ -252,10 +262,38 @@ class AntiHarassPlugin(BasePlugin):
 
     @on.llm_request(priority=Priority.HIGH)
     async def on_llm_request(self, event: KiraMessageBatchEvent, req: LLMRequest, *_):
+        # 动态工期说明：manage_ignore 的 duration 默认值取自当前配置（不写死）
+        self._update_tool_hint(req)
         # 主动屏蔽工具开关：关闭时从 tool_set 移除 manage_ignore（bot 不再能主动屏蔽）
         if not self.enable_manage_ignore:
             self._filter_tools(req.tool_set, ["manage_ignore"], "exact")
             logger.debug("[AntiHarass] manage_ignore 工具已禁用（enable_manage_ignore=false）")
+
+    def _update_tool_hint(self, req):
+        """动态更新 manage_ignore 工具描述：把 duration 默认时长从配置读出（不写死）。
+
+        框架在 ON_LLM_REQUEST 钩子后会重新 request.tools = tool_set.to_list()，
+        因此修改工具实例的参数描述会真实生效；实例被 tool_mgr 持有，配置热重载
+        后每次请求自动反映最新值。
+        """
+        try:
+            tool_set = getattr(req, "tool_set", None)
+            if not tool_set:
+                return
+            tool = tool_set.get("manage_ignore")
+            if tool is None:
+                return
+            default_d = self.default_ignore_duration
+            params = getattr(tool, "parameters", None)
+            if not isinstance(params, dict):
+                return
+            dur = params.get("properties", {}).get("duration")
+            if isinstance(dur, dict):
+                dur["description"] = (
+                    f"屏蔽时长（秒）。留空/0=用默认时长（当前配置 {default_d} 秒）；-1 表示永久"
+                )
+        except Exception:
+            pass
 
     def _filter_tools(self, tool_set, blacklist, mode: str):
         """按黑名单过滤 ToolSet（BaseTool 实例，tool.name + remove）。"""
