@@ -22,14 +22,6 @@ _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 if _PLUGIN_DIR not in sys.path:
     sys.path.insert(0, _PLUGIN_DIR)
 
-import importlib
-for _m in ("chat_enhance",):
-    if _m in sys.modules:
-        try:
-            importlib.reload(sys.modules[_m])
-        except Exception:
-            pass
-
 from core.plugin import BasePlugin, logger, on, Priority, register
 from core.chat.message_utils import KiraMessageEvent, KiraMessageBatchEvent
 from core.provider import LLMRequest
@@ -38,7 +30,8 @@ try:
     from core.chat import MessageChain
 except Exception:
     MessageChain = None
-from chat_enhance import HarassDetector, _safe_int, _safe_float
+# 骚扰检测器独立模块（不携带全量 chat_enhance 引擎）
+from harass_detect import HarassDetector, _safe_int, _safe_float
 
 # 额外信号（bot 发言/单用户消息/会话消息）的检测键
 EXTRA_KINDS = ("bot_speech", "user_msgs", "session_msgs")
@@ -361,12 +354,14 @@ class AntiHarassPlugin(BasePlugin):
             sid = None
         if sid is None:
             return []
-        # 固定时长优先
+        # 固定时长优先；-1 = 永久屏蔽（透传）；0/空 = 用默认时长
         if self.fixed_duration > 0:
             duration = self.fixed_duration
-        elif duration <= 0:
+        elif duration < 0:
+            pass  # -1 永久，交给 apply_ignore 处理
+        elif duration == 0:
             duration = self.default_ignore_duration
-        if self.max_duration > 0:
+        if duration > 0 and self.max_duration > 0:
             duration = min(duration, self.max_duration)
         uid = "*" if target == "all" else (target[5:] if target.startswith("user:") else target)
         # kind=all 时展开全部 7 类（4 核心 + 3 额外信号）——拉黑语义：all 含 poke
@@ -419,16 +414,27 @@ class AntiHarassPlugin(BasePlugin):
         if action == "unblock":
             if target_type == "all":
                 return "请指定要解除的用户或会话"
-            return self.harass.unblock(sid, target_id, block_type)
+            result = self.harass.unblock(sid, target_id, block_type)
+            logger.info(f"[AntiHarass] 解除屏蔽(工具): {target_type} {target_id} {block_type} → {result}")
+            return result
+        # -1 = 永久屏蔽（工具描述约定），透传不覆盖；0/空 = 用默认时长
         if self.fixed_duration > 0:
             duration = self.fixed_duration
-        elif duration <= 0:
+        elif duration < 0:
+            pass  # -1 永久，交给 apply_ignore 处理
+        elif duration == 0:
             duration = self.default_ignore_duration
-        if self.max_duration > 0:
+        if duration > 0 and self.max_duration > 0:
             duration = min(duration, self.max_duration)
         if target_type == "all":
             # 全局屏蔽：作用于所有会话（与 s/z 版一致，键 (sid="*", user="*")）
-            return self.harass.apply_ignore("*", "*", block_type, duration)
+            result = self.harass.apply_ignore("*", "*", block_type, duration)
+            logger.info(f"[AntiHarass] 屏蔽(工具): all {block_type} {duration}s → {result}")
+            return result
         if target_type == "session":
-            return self.harass.apply_ignore(sid, "*", block_type, duration)
-        return self.harass.apply_ignore(sid, target_id, block_type, duration)
+            result = self.harass.apply_ignore(sid, "*", block_type, duration)
+            logger.info(f"[AntiHarass] 屏蔽(工具): session {sid} {block_type} {duration}s → {result}")
+            return result
+        result = self.harass.apply_ignore(sid, target_id, block_type, duration)
+        logger.info(f"[AntiHarass] 屏蔽(工具): user {target_id} {block_type} {duration}s → {result}")
+        return result
