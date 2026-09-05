@@ -78,6 +78,8 @@ class AntiHarassPlugin(BasePlugin):
         self.dm_session_msgs_window = _safe_float(th.get("dm_session_msgs_window_seconds"), 60)
         self.dm_session_msgs_threshold = _safe_int(th.get("dm_session_msgs_threshold"), 20)
         self.default_ignore_duration = _safe_int(ig.get("default_ignore_duration"), 180)
+        # 额外信号默认屏蔽时长（独立于 default_ignore_duration：额外信号通知建议的 duration）
+        self.extra_default_duration = _safe_int(ig.get("extra_default_duration"), 180)
         self.fixed_duration = _safe_int(ig.get("fixed_duration"), 0)
         self.max_duration = _safe_int(ig.get("max_duration"), 0)
         self.notify_unblock = bool(ig.get("notify_unblock", True))
@@ -383,7 +385,7 @@ class AntiHarassPlugin(BasePlugin):
     def _build_extra_notice(self, kind: str, user_id: str, n: int, window: float, threshold: int) -> str:
         label = {"bot_speech": "you spoke", "user_msgs": f"user {user_id} sent",
                  "session_msgs": "this session received"}[kind]
-        dur = self.default_ignore_duration
+        dur = self.extra_default_duration
         return (
             f"[System: {label} {n} messages in {int(window)}s (threshold {threshold}). "
             f"Reply with <ignore>user:{user_id}|type:{kind}|duration:{dur}</ignore> to block, "

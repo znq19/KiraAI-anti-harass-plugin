@@ -190,6 +190,12 @@
         "name": "主动屏蔽工具（manage_ignore）",
         "default": true,
         "hint": "关闭后 bot 不再能主动调用屏蔽工具（仍可响应 XML tag 屏蔽），默认开启"
+      },
+      "extra_default_duration": {
+        "type": "integer",
+        "name": "额外信号默认屏蔽时长（秒）",
+        "default": 180,
+        "hint": "user_msgs/session_msgs/bot_speech 触发后通知里建议 bot 使用的屏蔽时长"
       }
     }
   },
