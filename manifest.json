@@ -1,7 +1,7 @@
 {
   "display_name": "Anti Harass 防骚扰",
   "plugin_id": "anti-harass",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "author": "znq19",
   "description": "骚扰屏蔽插件：戳一戳/连续at/连续关键词/引用唤醒/刷屏检测，bot 用 XML 决策屏蔽，可主动调用工具管理屏蔽名单（持久化）。与 KiraAI_sustained_chat_plugin / KiraAI_Default-Chat-Z 新版本互斥（聊天插件内置同能力并接管）。",
   "repo": "https://github.com/znq19/KiraAI-anti-harass-plugin",
