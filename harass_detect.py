@@ -45,6 +45,12 @@ class HarassDetector:
     def __init__(self, cfg: dict, plugin=None):
         self._plugin = plugin
         self._load(cfg)
+        # 额外信号独立配置（user_msgs/bot_speech/session_msgs 不再兜落 poke 配置）
+        self._extra_conf = {
+            "allow_bot_duration": bool(cfg.get("extra_allow_bot_duration", True)),
+            "max_duration": _safe_int(cfg.get("extra_max_duration"), 300),
+            "default_duration": _safe_int(cfg.get("extra_default_duration"), 180),
+        }
         # 作用域/白名单（全局，所有类型共用）：
         # scope_sessions 非空时仅对这些会话检测（空=全部）；白名单命中不检测
         self._scope_sessions = set(str(x) for x in (cfg.get("harass_scope_sessions") or []))
@@ -137,7 +143,13 @@ class HarassDetector:
         与 is_ignored 的区别：is_ignored 按 kind 精确匹配（检测跳过用）；
         is_blocked 不看 kind——只要该用户/会话被屏蔽过（无论 poke/at/keyword/
         reply 还是额外信号），其消息就完全不进 LLM（宿主 handle_msg 入口调用）。
+
+        白名单豁免：harass_whitelist_users / harass_whitelist_sessions 中的用户/会话
+        不受任何屏蔽影响（消息照常进入 LLM）。
         """
+        # 白名单豁免（先于屏蔽检查）
+        if user_id in self._whitelist_users or sid in self._whitelist_sessions:
+            return False
         for (s, uid, kind), until in self._ignored.items():
             if until <= now:
                 continue
@@ -152,11 +164,24 @@ class HarassDetector:
     def apply_ignore(self, sid: str, user_id: str, kind: str, duration: int) -> str:
         """执行屏蔽。user_id='*' 表示该会话内所有用户；sid='*' 表示全局（所有会话）。
         kind='all' 时展开为全部 4 类（poke/at/keyword/reply）。返回结果文本。"""
-        # kind='all' 时用任一具体 kind 的配置（默认时长/钳制）
-        conf = self._conf.get(kind) or self._conf.get("poke", {})
+        # kind='all' 时用任一具体 kind 的配置（默认时长/钳制）；
+        # 额外信号（user_msgs/bot_speech/session_msgs）用独立 extra 配置
+        if kind in ("user_msgs", "bot_speech", "session_msgs"):
+            conf = self._extra_conf
+        else:
+            conf = self._conf.get(kind) or self._conf.get("poke", {})
         if duration < 0:
-            # -1 = 永久屏蔽（工具描述约定）
-            until = float("inf")
+            # -1 = 永久屏蔽——但有最大时长限制时不允许永久：
+            # "-1 意为无限"，被钳到最大允许值；未启用上限（max<=0）才真正永久。
+            # allow_bot_duration=False（bot 不允许自设时长）时 -1 同样无效，按默认时长。
+            if not conf.get("allow_bot_duration", True):
+                duration = conf.get("default_duration", 180)
+                until = time.time() + duration
+            elif conf.get("max_duration", 0) > 0:
+                duration = conf["max_duration"]
+                until = time.time() + duration
+            else:
+                until = float("inf")
         else:
             # allow_bot_duration=False：bot 不允许自设时长，强制用默认时长
             # （配置语义：仅允许使用默认屏蔽时长，忽略 bot 建议值）
