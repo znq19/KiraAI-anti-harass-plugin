@@ -59,6 +59,7 @@ class AntiHarassPlugin(BasePlugin):
         th = cfg.get("section_thresholds", {}) or {}
         ig = cfg.get("section_ignore", {}) or {}
         self.detect_bot_speech = bool(detect.get("detect_bot_speech", False))
+        self.bot_speech_block_session = bool(detect.get("bot_speech_block_session", True))
         self.detect_user_msgs = bool(detect.get("detect_user_msgs", False))
         self.detect_session_msgs = bool(detect.get("detect_session_msgs", False))
         # 私聊额外信号独立开关（默认关：私聊是用户主动找 bot 聊天，
@@ -80,6 +81,8 @@ class AntiHarassPlugin(BasePlugin):
         self.default_ignore_duration = _safe_int(ig.get("default_ignore_duration"), 180)
         # 额外信号默认屏蔽时长（独立于 default_ignore_duration：额外信号通知建议的 duration）
         self.extra_default_duration = _safe_int(ig.get("extra_default_duration"), 180)
+        self.extra_allow_bot_duration = bool(ig.get("extra_allow_bot_duration", True))
+        self.extra_max_duration = _safe_int(ig.get("extra_max_duration"), 300)
         self.fixed_duration = _safe_int(ig.get("fixed_duration"), 0)
         self.max_duration = _safe_int(ig.get("max_duration"), 0)
         self.notify_unblock = bool(ig.get("notify_unblock", True))
@@ -93,6 +96,10 @@ class AntiHarassPlugin(BasePlugin):
         self.harass_whitelist_sessions = hscope.get("harass_whitelist_sessions", [])
         # 构造 HarassDetector 需要的 section 结构（section_poke/at/keyword/reply）
         self._harass_cfg = {}
+        # 额外信号独立配置（HarassDetector 特判用，不落 poke）
+        self._harass_cfg["extra_allow_bot_duration"] = self.extra_allow_bot_duration
+        self._harass_cfg["extra_max_duration"] = self.extra_max_duration
+        self._harass_cfg["extra_default_duration"] = self.extra_default_duration
         for kind, key in (("poke", "poke"), ("at", "at"), ("keyword", "keyword"), ("reply", "reply")):
             self._harass_cfg[f"section_{kind}"] = {
                 "enabled": bool(detect.get(f"detect_{key}", kind in ("poke", "at"))),
@@ -334,7 +341,7 @@ class AntiHarassPlugin(BasePlugin):
             dur = params.get("properties", {}).get("duration")
             if isinstance(dur, dict):
                 dur["description"] = (
-                    f"屏蔽时长（秒）。留空/0=用默认时长（当前配置 {default_d} 秒）；-1 表示永久"
+                    f"屏蔽时长（秒）。留空/0=用默认时长（当前配置 {default_d} 秒）；-1 表示永久（未设最大时长限制时；有上限则按最大允许值）"
                 )
         except Exception:
             pass
@@ -397,13 +404,30 @@ class AntiHarassPlugin(BasePlugin):
         return None
 
     def _build_extra_notice(self, kind: str, user_id: str, n: int, window: float, threshold: int) -> str:
+        """时长建议动态取配置允许的最大值（extra_max_duration，未启钳制时回落
+        extra_default_duration）；不教 -1（永久仅在 hint 中说明，避免绕过钳制）。
+        bot_speech + bot_speech_block_session 开启：教会话级拉黑标签（输入=拉黑当前会话）；
+        关闭则仅提醒。user_msgs/session_msgs 教定向 + 全拉黑两选项。"""
         label = {"bot_speech": "you spoke", "user_msgs": f"user {user_id} sent",
                  "session_msgs": "this session received"}[kind]
-        dur = self.extra_default_duration
+        dur = self.extra_max_duration if self.extra_max_duration > 0 else self.extra_default_duration
+        if kind == "bot_speech":
+            if self.bot_speech_block_session:
+                return (
+                    f"[System: you spoke {n} messages in {int(window)}s (threshold {threshold}). "
+                    f"Reply with <ignore>all|duration:{dur}</ignore> to block this session "
+                    f"(all messages stop entering the LLM, restore after {dur}s), "
+                    f"or <ignore>none</ignore> to do nothing.]"
+                )
+            return (
+                f"[System: you spoke {n} messages in {int(window)}s (threshold {threshold}). "
+                f"Consider slowing down and only reply when mentioned.]"
+            )
         return (
             f"[System: {label} {n} messages in {int(window)}s (threshold {threshold}). "
             f"Reply with <ignore>user:{user_id}|type:{kind}|duration:{dur}</ignore> to block, "
-            f"or <ignore>none</ignore> to do nothing. Ignore lasts {dur}s by default.]"
+            f"or <ignore>user:{user_id}|duration:{dur}</ignore> to fully block, "
+            f"or <ignore>none</ignore> to do nothing. Ignore lasts {dur}s (max allowed).]"
         )
 
     async def _send_notice(self, sid: str, text: str):
@@ -418,7 +442,7 @@ class AntiHarassPlugin(BasePlugin):
 
     # ---- XML tag ----
 
-    @register.tag(name="ignore", description="拉黑用户：屏蔽后该用户/会话的所有消息不再进入（含戳一戳/at/关键词/引用/刷屏）。输出 <ignore>user|duration:N</ignore> 拉黑目标用户，<ignore>all|duration:N</ignore> 拉黑所有用户，<ignore>user|type:poke|duration:N</ignore> 只屏蔽戳一戳（其他形式正常），<ignore>none</ignore> 不屏蔽。duration 为秒，留空用默认值。")
+    @register.tag(name="ignore", description="拉黑用户：屏蔽后该用户/会话的所有消息不再进入（含戳一戳/at/关键词/引用/刷屏）。输出 <ignore>user|duration:N</ignore> 拉黑目标用户，<ignore>all|duration:N</ignore> 拉黑所有用户，<ignore>user|type:poke|duration:N</ignore> 只屏蔽戳一戳（其他形式正常），<ignore>none</ignore> 不屏蔽。duration 为秒，留空用默认值，-1 表示永久（未设最大时长限制时；有上限则按最大允许值）。")
     async def handle_ignore(self, value: str, **kwargs) -> list:
         value = (value or "").strip()
         if not value or value.lower() == "none":
