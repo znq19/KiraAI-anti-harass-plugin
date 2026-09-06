@@ -90,12 +90,17 @@ manage_ignore(action="block", target_type="user", target_id="123456", block_type
 
 ## 📝 版本信息
 
-- 当前版本：v1.1.0
+- 当前版本：v1.1.1
 - 兼容 KiraAI：v2.29.6+
 - 作者：znq19
 
 <details>
 <summary>更新日志</summary>
+
+### v1.1.1
+
+- **过滤空通知事件（QQ 戳一戳别人等系统通知）**：框架把所有 notice（poke 别人/运气王/头衔/荣誉/进退群/管理员等）以"message_id=None、零内容"的消息事件广播给插件，此前会被误判为 poke 等骚扰信号（计数/通知误报）并参与评分
+- 修复后：`is_notice` 且消息链完全为空 → 丢弃，不进骚扰计数/通知；有内容的保留（poke bot 的 `[Poke …]` 文本仍正常触发 poke 信号，`[System: …]` 系统提示与真实消息不受影响）
 
 ### v1.1.0
 

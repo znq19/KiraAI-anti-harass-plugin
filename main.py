@@ -236,6 +236,20 @@ class AntiHarassPlugin(BasePlugin):
         user_id = str(event.message.sender.user_id) if event.message.sender else "unknown"
 
         # 核心检测（戳/at/关键词/引用）
+        # === 空通知事件过滤：QQ 戳一戳别人等系统通知（message_id=None、零内容元素）。
+        #     完全不进评分/前文/判定/顺延/骚扰统计（群聊/私聊一致）；poke bot 事件框架会构造 [Poke ...] 文本
+        #     （chain 非空）→ 保留（原生唤醒/骚扰语义）；[System: ...] 系统提示、图片/语音/贴纸
+        #     等真实消息内容 → 链非空 → 保留 ===
+        try:
+            if getattr(event, "is_notice", False):
+                _chain = list(getattr(getattr(event, "message", None), "chain", None) or [])
+                if not _chain:
+                    logger.debug(f"[AntiHarass] 空通知事件忽略(无内容): {event.session.sid}")
+                    event.discard()
+                    return
+        except Exception:
+            pass
+
         kind = self._detect_kind(event)
         if kind:
             notice = self.harass.check(sid, kind, user_id, now)
