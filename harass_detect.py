@@ -14,6 +14,12 @@ from typing import Optional
 
 from core.plugin import logger
 
+# 核心信号（频率检测类）与额外信号（bot 发言/单用户消息/会话消息）；
+# ALL_KINDS 为 "all" 展开的统一全集（apply_ignore/unblock/ignore tag 三处必须一致）
+CORE_KINDS = ("poke", "at", "keyword", "reply")
+EXTRA_KINDS = ("bot_speech", "user_msgs", "session_msgs")
+ALL_KINDS = tuple(dict.fromkeys(CORE_KINDS + EXTRA_KINDS))
+
 
 def _safe_int(v, default: int) -> int:
     """安全转 int：None/非数字/越界回退默认值。"""
@@ -40,7 +46,7 @@ class HarassDetector:
     屏蔽键：(sid, user_id, kind) 或 (sid, '*', kind)（all 累计/全局）。
     """
 
-    KINDS = ("poke", "at", "keyword", "reply")
+    KINDS = CORE_KINDS
 
     def __init__(self, cfg: dict, plugin=None):
         self._plugin = plugin
@@ -163,7 +169,7 @@ class HarassDetector:
 
     def apply_ignore(self, sid: str, user_id: str, kind: str, duration: int) -> str:
         """执行屏蔽。user_id='*' 表示该会话内所有用户；sid='*' 表示全局（所有会话）。
-        kind='all' 时展开为全部 4 类（poke/at/keyword/reply）。返回结果文本。"""
+        kind='all' 时展开为 ALL_KINDS（4 核心 + 3 额外信号）。返回结果文本。"""
         # kind='all' 时用任一具体 kind 的配置（默认时长/钳制）；
         # 额外信号（user_msgs/bot_speech/session_msgs）用独立 extra 配置
         if kind in ("user_msgs", "bot_speech", "session_msgs"):
@@ -193,12 +199,13 @@ class HarassDetector:
                 duration = min(duration, conf["max_duration"])
             until = time.time() + duration
         if kind == "all":
-            # 拉黑语义：all = 全部形式（含 poke）——该用户/会话消息完全不进 LLM
-            kinds = self.KINDS
+            # 拉黑语义：all = 全部形式（4 核心 + 3 额外信号，含 poke）——该用户/会话消息完全不进 LLM
+            kinds = ALL_KINDS
         else:
             kinds = (kind,)
         for k in kinds:
             self._ignored[(sid, user_id, k)] = until
+        self._mark_dirty()
         if sid == "*":
             scope_txt = "all sessions, all users"
         elif user_id == "*":
@@ -247,14 +254,29 @@ class HarassDetector:
                 return u
         return None
 
-    def unblock(self, sid: str, user_id: str, kind: str) -> str:
-        kinds = self.KINDS if kind == "all" else (kind,)
+    def _mark_dirty(self) -> None:
+        """屏蔽名单有变更 → 通知宿主插件置持久化脏标记（宿主负责落盘）。"""
+        try:
+            if self._plugin is not None:
+                self._plugin._persist_dirty = True
+        except Exception:
+            pass
+
+    def unblock_count(self, sid: str, user_id: str, kinds) -> int:
+        """逐类解除屏蔽，返回实际移除条数。"""
         removed = 0
         for k in kinds:
             key = (sid, user_id, k)
             if key in self._ignored:
                 self._ignored.pop(key, None)
                 removed += 1
+        if removed:
+            self._mark_dirty()
+        return removed
+
+    def unblock(self, sid: str, user_id: str, kind: str) -> str:
+        # kind="all" 展开 ALL_KINDS（与 apply_ignore 一致，否则额外信号类解不掉）
+        removed = self.unblock_count(sid, user_id, ALL_KINDS if kind == "all" else (kind,))
         if removed:
             return f"已解除 {user_id} 的 {kind} 屏蔽"
         return f"未找到 {user_id} 的 {kind} 屏蔽"
@@ -275,8 +297,11 @@ class HarassDetector:
 
     def prune(self) -> None:
         now = time.time()
-        for key in [k for k, v in self._ignored.items() if v <= now]:
+        expired = [k for k, v in self._ignored.items() if v <= now]
+        for key in expired:
             self._ignored.pop(key, None)
+        if expired:
+            self._mark_dirty()
         # 回收 7 天无活动的检测计数（_counts / _last_trigger_user_map），防长期运行内存增长
         for sid in list(self._counts.keys()):
             last = 0.0
