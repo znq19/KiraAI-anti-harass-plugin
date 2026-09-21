@@ -1,4 +1,4 @@
-# KiraAI_anti_harass_plugin/防骚扰 v1.1.2
+# KiraAI_anti_harass_plugin/防骚扰 v1.1.3
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/znq19/KiraAI_anti_harass_plugin)
 
@@ -90,12 +90,21 @@ manage_ignore(action="block", target_type="user", target_id="123456", block_type
 
 ## 📝 版本信息
 
-- 当前版本：v1.1.2
+- 当前版本：v1.1.3
 - 兼容 KiraAI：v2.29.6+
 - 作者：znq19
 
 <details>
 <summary>更新日志</summary>
+
+### v1.1.3
+- **修复 `_last_ignore_sid` 跨会话竞态**：改为 sid 维度记录（`_ignore_ctx: sid→过期时间`，300s 有效）+ 响应会话上下文变量（contextvars）；ignore tag 消费时上下文 sid 优先、唯一存活条目回退，多会话并发回复不再把屏蔽打到错误会话（`_last_ignore_sid` 兼容保留）
+- **系统事件与提醒不再计为骚扰信号、也不可被忽略**：框架 publish_notice 注入的提醒（is_notice=True、nickname="system"、群聊 user_id="unknown"/私聊=session id、is_mentioned=True）与系统触发事件（user_id 以 `system_` 前缀开头）在 handle_msg 入口直接跳过；`_detect_kind` 加 system_ 前缀双保险。真实 QQ poke 的 is_notice 事件（sender 为真实用户）不受影响——此前提醒会被计为 at 形成"提醒→再提醒"反馈循环
+- **修复 manage_ignore 解除 session 屏蔽永不生效**：session 级屏蔽存储键是 `(sid, "*", kind)`，解除时误用 target_id 当用户键永远匹配不上；现按 `"*"` 逐类解除
+- **修复 "all" 解除屏蔽遗漏额外信号类**：`apply_ignore`/`unblock`/ignore tag 三处 "all" 展开统一为 `ALL_KINDS`（poke/at/keyword/reply + bot_speech/user_msgs/session_msgs），此前 unblock("all") 只解 4 核心类，tag 屏蔽的额外信号类解不掉
+- **新增与 S/Z 版插件共存提示**：加载时检测到已启用的 sustained_chat / Default-Chat-Z 插件则 warning 提示只启用其一（检测失败不影响加载）
+- **持久化改脏标记 + 异步写**：屏蔽名单有变更才置脏，`_persist_loop` 仅在脏时经 `asyncio.to_thread` 落盘（不阻塞事件循环）；shutdown 时若脏最后同步写一次
+- 版本 v1.1.2 → v1.1.3
 
 ### v1.1.2
 - **-1 永久不再绕过钳制**：设置最大时长限制（max_duration/extra_max_duration>0）后，bot 输入 -1 按最大允许值执行（不再永久）；仅未启用上限时 -1 才真正永久；allow_bot_duration=False 时 -1 也强制默认时长。hint 已同步更新

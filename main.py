@@ -11,6 +11,7 @@
 """
 
 import asyncio
+import contextvars
 import json
 import os
 import sys
@@ -31,10 +32,10 @@ try:
 except Exception:
     MessageChain = None
 # 骚扰检测器独立模块（不携带全量 chat_enhance 引擎）
-from harass_detect import HarassDetector, _safe_int, _safe_float
+from harass_detect import HarassDetector, ALL_KINDS, EXTRA_KINDS, _safe_int, _safe_float
 
-# 额外信号（bot 发言/单用户消息/会话消息）的检测键
-EXTRA_KINDS = ("bot_speech", "user_msgs", "session_msgs")
+# 响应会话上下文（ignore tag 处理器定位本次回复所属会话，防 _last_ignore_sid 跨会话竞态）
+_RESP_SID: contextvars.ContextVar = contextvars.ContextVar("anti_harass_resp_sid", default=None)
 
 
 class AntiHarassPlugin(BasePlugin):
@@ -52,6 +53,10 @@ class AntiHarassPlugin(BasePlugin):
         self._persist_path = None
         self._persist_task: Optional[asyncio.Task] = None
         self._prune_task: Optional[asyncio.Task] = None
+        self._persist_dirty = False
+        # ignore tag 会话定位：sid -> 过期时间戳（替代单一 _last_ignore_sid，防跨会话竞态）
+        self._last_ignore_sid: Optional[str] = None  # 兼容保留
+        self._ignore_ctx: dict[str, float] = {}
 
     def _load_config(self, cfg: dict) -> None:
         # schema 是 section 结构（section_detect/section_thresholds/section_ignore）
@@ -122,6 +127,24 @@ class AntiHarassPlugin(BasePlugin):
             self._persist_task = asyncio.create_task(self._persist_loop())
         # 额外信号计数回收（7 天闲置清理）
         self._prune_task = asyncio.create_task(self._prune_loop())
+        # 共存提示：s/z 新版聊天插件已内置同款防骚扰，同时启用会重复处理
+        try:
+            plugins = getattr(self, "_plugins", None)
+            if not plugins:
+                mgr = getattr(self.ctx, "plugin_mgr", None) or getattr(self.ctx, "plugin_manager", None)
+                plugins = getattr(mgr, "plugins", None) if mgr is not None else getattr(self.ctx, "plugins", None)
+            if isinstance(plugins, dict):
+                plugins = list(plugins.values())
+            for p in (plugins or []):
+                info = getattr(p, "plugin_info", None)
+                name = str(getattr(info, "name", "") or getattr(info, "plugin_id", "")
+                           or getattr(p, "name", "") or getattr(p, "plugin_id", "") or "")
+                enabled = bool(getattr(p, "enabled", True))
+                if enabled and ("sustained_chat" in name or "Default-Chat-Z" in name):
+                    logger.warning("[AntiHarass] 检测到 S/Z 版聊天插件已启用：S/Z 版插件已内置同款防骚扰，建议只启用其一避免重复处理")
+                    break
+        except Exception:
+            pass  # 检测失败不影响激活
         logger.info("[AntiHarass] 防骚扰插件已加载")
 
     async def terminate(self):
@@ -137,7 +160,9 @@ class AntiHarassPlugin(BasePlugin):
                 await asyncio.wait_for(self._prune_task, timeout=3.0)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
-        self._save_persist()
+        # shutdown：若屏蔽名单有未落盘变更则最后同步写一次
+        if self._persist_dirty:
+            self._save_persist()
         logger.info("[AntiHarass] 防骚扰插件已终止")
 
     async def _prune_loop(self):
@@ -189,6 +214,7 @@ class AntiHarassPlugin(BasePlugin):
                     data[f"{sid}|{uid}|{kind}"] = until if until != float("inf") else now + 10 * 365 * 24 * 3600
             with open(self._persist_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False)
+            self._persist_dirty = False
         except Exception as e:
             logger.warning(f"[AntiHarass] 保存持久化失败: {e}")
 
@@ -196,7 +222,9 @@ class AntiHarassPlugin(BasePlugin):
         while True:
             try:
                 await asyncio.sleep(60)
-                self._save_persist()
+                # 脏标记：仅屏蔽名单有变更时才落盘（同步写放到线程，避免阻塞事件循环）
+                if self._persist_dirty:
+                    await asyncio.to_thread(self._save_persist)
             except asyncio.CancelledError:
                 return
             except Exception:
@@ -207,6 +235,18 @@ class AntiHarassPlugin(BasePlugin):
     @on.im_message(priority=Priority.HIGH)
     async def handle_msg(self, event: KiraMessageEvent, *_):
         sid = event.session.sid
+        # === 系统事件/框架提醒不计骚扰：publish_notice 注入的提醒（is_notice=True，
+        #     nickname="system"，群聊 user_id="unknown"/私聊=session id，is_mentioned=True）
+        #     与系统触发事件（user_id 以 system_ 前缀开头）既不是用户骚扰信号，
+        #     也不应触发忽略逻辑——此前会反馈循环（提醒被计为 at 再触发新提醒）。
+        #     注意：真实 QQ 戳一戳也是 is_notice 事件（sender 为真实用户），
+        #     因此不能仅凭 is_notice 一刀切，必须叠加系统指纹判定 ===
+        try:
+            if self._is_system_event(event):
+                logger.debug(f"[AntiHarass] 系统事件/提醒跳过骚扰统计: {sid}")
+                return
+        except Exception:
+            pass
         # === 拉黑拦截：被屏蔽的用户/会话消息完全不进 LLM（不 buffer/flush/不触发） ===
         try:
             _uid = str(event.message.sender.user_id) if event.message.sender else "unknown"
@@ -309,7 +349,28 @@ class AntiHarassPlugin(BasePlugin):
         except Exception:
             sid = None
         if sid:
-            self._last_ignore_sid = sid
+            # sid 维度记录（防多会话并发回复互相覆盖）：条目 300s 过期
+            self._ignore_ctx[sid] = time.time() + 300
+            self._last_ignore_sid = sid  # 兼容保留
+
+    def _consume_ignore_sid(self, sid: Optional[str]) -> Optional[str]:
+        """从 _ignore_ctx 解析 ignore tag 应作用的会话：
+        非空 sid 命中未过期条目 → 返回该 sid（顺手清理过期条目）；
+        否则全局扫描，仅当未过期条目唯一时返回其 sid（多条=无法安全定位，放弃）。"""
+        now = time.time()
+        if sid:
+            exp = self._ignore_ctx.get(sid)
+            if exp is not None:
+                if exp > now:
+                    return sid
+                self._ignore_ctx.pop(sid, None)
+        alive = []
+        for k, exp in list(self._ignore_ctx.items()):
+            if exp <= now:
+                self._ignore_ctx.pop(k, None)
+            else:
+                alive.append(k)
+        return alive[0] if len(alive) == 1 else None
 
     @on.llm_request(priority=Priority.HIGH)
     async def on_llm_request(self, event: KiraMessageBatchEvent, req: LLMRequest, *_):
@@ -381,7 +442,39 @@ class AntiHarassPlugin(BasePlugin):
                 self._extra_counts[sid]["bot_speech"].clear()
                 await self._send_notice(sid, self._build_extra_notice("bot_speech", "bot", n, self.bot_speech_window, self.bot_speech_threshold))
 
+    def _is_system_event(self, event) -> bool:
+        """判定框架系统事件/提醒（publish_notice 注入、system_ 触发的主动消息）。
+
+        指纹（任一命中）：
+        - sender.user_id 以 "system_" 开头（system_proactive_dm/system_scheduled 等）
+        - sender.nickname == "system" 且 message_id == "system_message"
+        - is_notice=True 且发送者是系统指纹（nickname=="system" 或 user_id 空/"unknown"）
+          ——真实 QQ poke 等 notice 的 sender 是真实用户，不受影响
+        """
+        try:
+            msg = getattr(event, "message", None)
+            sender = getattr(msg, "sender", None) or getattr(event, "sender", None)
+            uid = str(getattr(sender, "user_id", "") or "")
+            nick = str(getattr(sender, "nickname", "") or "")
+            if uid.startswith("system_"):
+                return True
+            mid = str(getattr(event, "message_id", "") or getattr(msg, "message_id", "") or "")
+            if nick == "system" and mid == "system_message":
+                return True
+            if getattr(event, "is_notice", False) and (nick == "system" or uid in ("", "unknown")):
+                return True
+        except Exception:
+            pass
+        return False
+
     def _detect_kind(self, event) -> Optional[str]:
+        # 双保险：系统触发事件（system_ 前缀 user_id）不参与任何信号检测
+        try:
+            _sender = getattr(getattr(event, "message", None), "sender", None) or getattr(event, "sender", None)
+            if str(getattr(_sender, "user_id", "") or "").startswith("system_"):
+                return None
+        except Exception:
+            pass
         if getattr(event, "is_notice", False):
             raw = getattr(event, "raw_message", None)
             if isinstance(raw, dict) and raw.get("notice_type") == "notify" and raw.get("sub_type") == "poke":
@@ -447,6 +540,15 @@ class AntiHarassPlugin(BasePlugin):
         value = (value or "").strip()
         if not value or value.lower() == "none":
             return []
+        # 记录本次 tag 所属会话上下文（框架若透传 event 则最准，防跨会话竞态）
+        _ev = kwargs.get("event")
+        if _ev is not None:
+            try:
+                _sid = str(_ev.session.sid)
+                if _sid:
+                    _RESP_SID.set(_sid)
+            except Exception:
+                pass
         parts = [p.strip() for p in value.split("|")]
         target = parts[0].lower()
         kind = "all"
@@ -459,10 +561,9 @@ class AntiHarassPlugin(BasePlugin):
                     duration = int(p.split(":", 1)[1])
                 except (ValueError, IndexError):
                     duration = 0
-        try:
-            sid = self._last_ignore_sid
-        except AttributeError:
-            sid = None
+        # 消费：上下文 sid 优先（须命中未过期记录），否则按 _ignore_ctx 唯一存活条目回退
+        sid_ctx = _RESP_SID.get()
+        sid = sid_ctx if sid_ctx and sid_ctx in self._ignore_ctx else self._consume_ignore_sid(self._last_ignore_sid)
         if sid is None:
             return []
         # 固定时长优先；-1 = 永久屏蔽（透传）；0/空 = 用默认时长
@@ -475,8 +576,8 @@ class AntiHarassPlugin(BasePlugin):
         if duration > 0 and self.max_duration > 0:
             duration = min(duration, self.max_duration)
         uid = "*" if target == "all" else (target[5:] if target.startswith("user:") else target)
-        # kind=all 时展开全部 7 类（4 核心 + 3 额外信号）——拉黑语义：all 含 poke
-        kinds = ("poke", "at", "keyword", "reply", "bot_speech", "user_msgs", "session_msgs") if kind == "all" else (kind,)
+        # kind=all 时展开全部 7 类（4 核心 + 3 额外信号，与 apply_ignore/unblock 一致）——拉黑语义：all 含 poke
+        kinds = ALL_KINDS if kind == "all" else (kind,)
         for k in kinds:
             if uid == "*":
                 self.harass.apply_ignore(sid, "*", k, duration)
@@ -525,6 +626,13 @@ class AntiHarassPlugin(BasePlugin):
         if action == "unblock":
             if target_type == "all":
                 return "请指定要解除的用户或会话"
+            if target_type == "session":
+                # 会话级屏蔽的存储键是 (sid, "*", kind)——按 target_id 解永远匹配不上，
+                # 必须用 "*" 逐类解除
+                n = self.harass.unblock_count(sid, "*", ALL_KINDS if block_type == "all" else (block_type,))
+                result = f"已解除会话 {sid} 的屏蔽（{n} 条）" if n else "未找到该会话的屏蔽"
+                logger.info(f"[AntiHarass] 解除屏蔽(工具): session {sid} {block_type} → {result}")
+                return result
             result = self.harass.unblock(sid, target_id, block_type)
             logger.info(f"[AntiHarass] 解除屏蔽(工具): {target_type} {target_id} {block_type} → {result}")
             return result
